@@ -1,0 +1,76 @@
+echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+
+export ZONE=$(gcloud compute project-info describe \
+--format="value(commonInstanceMetadata.items[google-compute-default-zone])")
+
+export REGION=$(echo "$ZONE" | cut -d '-' -f 1-2)
+
+gcloud config set compute/region $REGION
+
+gcloud services disable dataflow.googleapis.com
+gcloud services enable \
+dataflow.googleapis.com \
+cloudscheduler.googleapis.com
+
+sleep 30
+
+PROJECT_ID=$(gcloud config get-value project)
+BUCKET="${PROJECT_ID}-bucket"
+
+gsutil mb gs://$BUCKET
+
+gcloud pubsub topics create $TOPIC
+
+# Set the App Engine region variable
+if [ "$REGION" == "us-central1" ]; then
+  gcloud app create --region us-central
+elif [ "$REGION" == "europe-west1" ]; then
+  gcloud app create --region europe-west
+else
+  gcloud app create --region "$REGION"
+fi
+
+gcloud scheduler jobs create pubsub publisher-job --schedule="* * * * *" \
+    --topic=$TOPIC --message-body="$MESSAGE"
+
+while true; do
+    if gcloud scheduler jobs run publisher-job --location="$REGION"; then
+        echo "Command executed successfully. Now running next command.."
+        break 
+    else
+        echo "Retrying please wait..."
+        sleep 10 
+    fi
+done
+
+cat > shell.sh <<EOF_CP
+#!/bin/bash
+git clone https://github.com/GoogleCloudPlatform/python-docs-samples.git
+cd python-docs-samples/pubsub/streaming-analytics
+pip install -U -r requirements.txt
+python PubSubToGCS.py \
+--project=$PROJECT_ID \
+--region=$REGION \
+--input_topic=projects/$PROJECT_ID/topics/$TOPIC \
+--output_path=gs://$BUCKET/samples/output \
+--runner=DataflowRunner \
+--window_size=2 \
+--num_shards=2 \
+--temp_location=gs://$BUCKET_NAME/temp
+EOF_CP
+
+chmod +x shell.sh
+
+docker run -it -e DEVSHELL_PROJECT_ID=$DEVSHELL_PROJECT_ID -e BUCKET_NAME=$BUCKET -e PROJECT_ID=$PROJECT_ID -e REGION=$REGION -e TOPIC=$TOPIC -v $(pwd)/shell.sh:/shell.sh python:3.7 /bin/bash -c "/shell.sh"
+
+echo
+echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}              LAB COMPLETED SUCCESSFULLY!              ${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
+echo
+echo "${RED_TEXT}${BOLD_TEXT}${UNDERLINE_TEXT}https://www.youtube.com/@PerkVers${RESET_FORMAT}"
+echo "${GREEN_TEXT}${BOLD_TEXT}👍 LIKE | 🔄 SHARE | 🔔 SUBSCRIBE${RESET_FORMAT}"
+echo "${YELLOW_TEXT}${BOLD_TEXT}PERKVERSE - Google Cloud Arcade Labs & Tech Opportunities${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}Follow @PerkVers for more updates${RESET_FORMAT}"
