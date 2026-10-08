@@ -1,33 +1,30 @@
-```bash
 #!/bin/bash
 
-# Color Definitions
-BLACK_TEXT=$'\033[0;90m'
-RED_TEXT=$'\033[0;91m'
-GREEN_TEXT=$'\033[0;92m'
-YELLOW_TEXT=$'\033[0;93m'
-BLUE_TEXT=$'\033[0;94m'
-MAGENTA_TEXT=$'\033[0;95m'
-CYAN_TEXT=$'\033[0;96m'
-WHITE_TEXT=$'\033[0;97m'
+# ==============================
+# PERKVERSE - Google Cloud Arcade
+# Analyze Speech and Language with Google APIs
+# ==============================
 
-NO_COLOR=$'\033[0m'
-RESET_FORMAT=$'\033[0m'
-
-BOLD_TEXT=$'\033[1m'
-UNDERLINE_TEXT=$'\033[4m'
+# Colors
+RED_TEXT='\033[0;31m'
+GREEN_TEXT='\033[0;32m'
+YELLOW_TEXT='\033[1;33m'
+CYAN_TEXT='\033[0;36m'
+BOLD_TEXT='\033[1m'
+UNDERLINE_TEXT='\033[4m'
+RESET_FORMAT='\033[0m'
 
 clear
 
-# Welcome message
 echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}          SUBSCRIBE PERKVERSE - INITIATING EXECUTION.                   ${RESET_FORMAT}"
 echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
 echo
 
 # Get API Key
 read -p "${CYAN_TEXT}${BOLD_TEXT}Enter your Google Cloud API Key: ${RESET_FORMAT}" API_KEY_INPUT
 export API_KEY="$API_KEY_INPUT"
+
 echo "${GREEN_TEXT}✓ API Key set successfully${RESET_FORMAT}"
 echo
 
@@ -134,7 +131,8 @@ echo "${YELLOW_TEXT}${BOLD_TEXT}Downloading sample data for analysis...${RESET_F
 
 gsutil cp gs://cloud-samples-tests/natural-language/sentiment-samples.tgz .
 
-gunzip sentiment-samples.tgz
+gunzip -f sentiment-samples.tgz
+
 tar -xvf sentiment-samples.tar
 
 echo
@@ -142,7 +140,6 @@ echo "${YELLOW_TEXT}${BOLD_TEXT}Running Sentiment Analysis on sample review...${
 
 python3 sentiment_analysis.py reviews/bladerunner-pos.txt
 
-# Completion Message
 echo
 echo "${GREEN_TEXT}${BOLD_TEXT}✓ All lab tasks executed successfully!${RESET_FORMAT}"
 
@@ -155,4 +152,3 @@ echo "${RED_TEXT}${BOLD_TEXT}${UNDERLINE_TEXT}https://www.youtube.com/@PerkVers$
 echo "${GREEN_TEXT}${BOLD_TEXT}👍 LIKE | 🔄 SHARE | 🔔 SUBSCRIBE${RESET_FORMAT}"
 echo "${YELLOW_TEXT}${BOLD_TEXT}PERKVERSE - Google Cloud Arcade Labs & Tech Opportunities${RESET_FORMAT}"
 echo "${CYAN_TEXT}${BOLD_TEXT}Follow @PerkVers for more updates${RESET_FORMAT}"
-```
