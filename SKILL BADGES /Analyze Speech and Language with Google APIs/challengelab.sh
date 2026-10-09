@@ -1,37 +1,43 @@
+echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+
 #!/bin/bash
 
-# ==============================
-# PERKVERSE - Google Cloud Arcade
-# Analyze Speech and Language with Google APIs
-# ==============================
+set -e
 
-# Colors
-RED_TEXT='\033[0;31m'
-GREEN_TEXT='\033[0;32m'
-YELLOW_TEXT='\033[1;33m'
-CYAN_TEXT='\033[0;36m'
-BOLD_TEXT='\033[1m'
-UNDERLINE_TEXT='\033[4m'
-RESET_FORMAT='\033[0m'
-
-clear
-
-echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}          SUBSCRIBE PERKVERSE - INITIATING EXECUTION.                   ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+echo "Task 1: Create an API key"
+echo "Create the API key in Google Cloud Console first."
+read -s -p "Paste your API key: " API_KEY
 echo
+export API_KEY
 
-# Get API Key
-read -p "${CYAN_TEXT}${BOLD_TEXT}Enter your Google Cloud API Key: ${RESET_FORMAT}" API_KEY_INPUT
-export API_KEY="$API_KEY_INPUT"
+echo "Finding lab-vm..."
+ZONE=$(gcloud compute instances list \
+  --filter="name=lab-vm" \
+  --format="value(zone)" | head -n 1)
 
-echo "${GREEN_TEXT}✓ API Key set successfully${RESET_FORMAT}"
-echo
+if [ -z "$ZONE" ]; then
+  echo "ERROR: lab-vm not found. Start the lab and try again."
+  exit 1
+fi
 
-# Natural Language API Request
-echo "${YELLOW_TEXT}${BOLD_TEXT}Preparing Natural Language API Request...${RESET_FORMAT}"
+echo "Connecting to lab-vm in zone $ZONE..."
 
-cat > nl_request.json <<EOF
+API_KEY_B64=$(printf '%s' "$API_KEY" | base64 -w 0)
+unset API_KEY
+
+gcloud compute ssh lab-vm \
+  --zone="$ZONE" \
+  --command="API_KEY_B64=$API_KEY_B64 bash -s" <<'REMOTE'
+
+set -e
+export API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+unset API_KEY_B64
+
+echo "Task 2: Natural Language API entity analysis"
+
+cat > nl_request.json <<'EOF'
 {
   "document": {
     "type": "PLAIN_TEXT",
@@ -41,20 +47,17 @@ cat > nl_request.json <<EOF
 }
 EOF
 
-echo "${YELLOW_TEXT}${BOLD_TEXT}Sending request to Natural Language API...${RESET_FORMAT}"
-
-curl "https://language.googleapis.com/v1/documents:analyzeEntities?key=${API_KEY}" \
-  -s -X POST \
+curl -fsS -X POST \
   -H "Content-Type: application/json" \
-  --data-binary @nl_request.json > nl_response.json
+  --data-binary @nl_request.json \
+  "https://language.googleapis.com/v1/documents:analyzeEntities?key=${API_KEY}" \
+  -o nl_response.json
 
-echo "${GREEN_TEXT}✓ Response saved to nl_response.json${RESET_FORMAT}"
+echo "Task 2 request completed. Response saved."
 
-# Speech-to-Text API Request
-echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Preparing Speech-to-Text API Request...${RESET_FORMAT}"
+echo "Task 3: Speech-to-Text API"
 
-cat > speech_request.json <<EOF
+cat > speech_request.json <<'EOF'
 {
   "config": {
     "encoding": "FLAC",
@@ -66,39 +69,24 @@ cat > speech_request.json <<EOF
 }
 EOF
 
-echo "${YELLOW_TEXT}${BOLD_TEXT}Sending request to Speech-to-Text API...${RESET_FORMAT}"
-
-curl -s -X POST \
+curl -fsS -X POST \
   -H "Content-Type: application/json" \
   --data-binary @speech_request.json \
-  "https://speech.googleapis.com/v1/speech:recognize?key=${API_KEY}" > speech_response.json
+  "https://speech.googleapis.com/v1/speech:recognize?key=${API_KEY}" \
+  -o speech_response.json
 
-echo "${GREEN_TEXT}✓ Response saved to speech_response.json${RESET_FORMAT}"
+echo "Task 3 request completed. Response saved."
 
-# Sentiment Analysis
-echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Setting up Sentiment Analysis...${RESET_FORMAT}"
+echo "Task 4: Sentiment analysis"
 
-cat > sentiment_analysis.py <<EOF
+cat > sentiment_analysis.py <<'PY'
 import argparse
 from google.cloud import language_v1
 
-def print_result(annotations):
-    score = annotations.document_sentiment.score
-    magnitude = annotations.document_sentiment.magnitude
-
-    for index, sentence in enumerate(annotations.sentences):
-        sentence_sentiment = sentence.sentiment.score
-        print(f"Sentence {index} sentiment score: {sentence_sentiment:.2f}")
-
-    print(f"\nOverall Sentiment: Score {score:.2f}, Magnitude {magnitude:.2f}")
-    return 0
-
 def analyze(movie_review_filename):
-    """Run sentiment analysis on text from a file."""
     client = language_v1.LanguageServiceClient()
 
-    with open(movie_review_filename) as review_file:
+    with open(movie_review_filename, "r") as review_file:
         content = review_file.read()
 
     document = language_v1.Document(
@@ -106,42 +94,45 @@ def analyze(movie_review_filename):
         type_=language_v1.Document.Type.PLAIN_TEXT
     )
 
-    annotations = client.analyze_sentiment(
-        request={"document": document}
-    )
+    response = client.analyze_sentiment(request={"document": document})
 
-    print_result(annotations)
+    for index, sentence in enumerate(response.sentences):
+        print(
+            f"Sentence {index} sentiment score: "
+            f"{sentence.sentiment.score:.2f}"
+        )
+
+    print(
+        f"Overall Sentiment: Score "
+        f"{response.document_sentiment.score:.2f}, Magnitude "
+        f"{response.document_sentiment.magnitude:.2f}"
+    )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Perform sentiment analysis on movie reviews",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
-    parser.add_argument(
-        "movie_review_filename",
-        help="Path to the movie review text file"
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("movie_review_filename")
     args = parser.parse_args()
     analyze(args.movie_review_filename)
-EOF
+PY
 
-echo "${YELLOW_TEXT}${BOLD_TEXT}Downloading sample data for analysis...${RESET_FORMAT}"
+echo "Downloading sentiment samples..."
+gsutil cp \
+  gs://cloud-samples-tests/natural-language/sentiment-samples.tgz \
+  sentiment-samples.tgz
 
-gsutil cp gs://cloud-samples-tests/natural-language/sentiment-samples.tgz .
+tar -xzf sentiment-samples.tgz
 
-gunzip -f sentiment-samples.tgz
+echo "Review files available:"
+ls reviews/
 
-tar -xvf sentiment-samples.tar
-
-echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Running Sentiment Analysis on sample review...${RESET_FORMAT}"
-
+echo "Running sentiment analysis..."
 python3 sentiment_analysis.py reviews/bladerunner-pos.txt
 
-echo
-echo "${GREEN_TEXT}${BOLD_TEXT}✓ All lab tasks executed successfully!${RESET_FORMAT}"
+echo "All four task steps have been executed."
+REMOTE
+
+echo "Script execution finished."
+echo "Check each task using Check my progress in Google Skills."
 
 echo
 echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
