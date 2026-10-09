@@ -6,11 +6,10 @@ echo "${CYAN_TEXT}${BOLD_TEXT}==================================================
 
 set -e
 
-echo "Task 1: Create an API key"
-echo "Create the API key in Google Cloud Console first."
-read -s -p "Paste your API key: " API_KEY
+read -p "${CYAN_TEXT}${BOLD_TEXT}Enter your Google Cloud API Key: ${RESET_FORMAT}" API_KEY_INPUT
+export API_KEY="$API_KEY_INPUT"
+echo "${GREEN_TEXT}✓ API Key set successfully${RESET_FORMAT}"
 echo
-export API_KEY
 
 echo "Finding lab-vm..."
 ZONE=$(gcloud compute instances list \
