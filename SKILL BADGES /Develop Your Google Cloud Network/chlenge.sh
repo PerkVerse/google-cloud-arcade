@@ -2,12 +2,6 @@ echo "${CYAN_TEXT}${BOLD_TEXT}==================================================
 echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
 echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
 
-# Set the region and zone
-
-export REGION=
-export ZONE=
-
-
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
