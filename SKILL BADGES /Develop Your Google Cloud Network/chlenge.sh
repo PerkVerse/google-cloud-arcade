@@ -171,6 +171,16 @@ kubectl create -f wp-service.yaml
 
 echo "${RED}${BOLD}Task 7. ${RESET}""${WHITE}${BOLD}Create a WordPress deployment${RESET}" "${GREEN}${BOLD}Completed${RESET}"
 
+echo "Task 8: Enable monitoring"
+
+PROJECT_ID=$(gcloud config get-value project)
+
+gcloud monitoring uptime create wordpress-uptime-check \
+  --resource-type=uptime-url \
+  --resource-labels=host="$(kubectl get service wordpress -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+
+echo "Task 8 command executed. Check progress in Google Skills."
+
 # Get the IAM policy JSON
 IAM_POLICY_JSON=$(gcloud projects get-iam-policy $DEVSHELL_PROJECT_ID --format=json)
 
