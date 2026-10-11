@@ -4,42 +4,50 @@
 # ==========================================
 # PERKVERSE | GSP074
 # Cloud Storage: Qwik Start - CLI/SDK
+# YouTube: @PerkVers
 # ==========================================
 
-set -euo pipefail
+set -Eeuo pipefail
 
-# Text colors
-BLACK_TEXT=$'\033[0;90m'
-RED_TEXT=$'\033[0;91m'
-GREEN_TEXT=$'\033[0;92m'
-YELLOW_TEXT=$'\033[0;93m'
-BLUE_TEXT=$'\033[0;94m'
-MAGENTA_TEXT=$'\033[0;95m'
-CYAN_TEXT=$'\033[0;96m'
-WHITE_TEXT=$'\033[0;97m'
+# Colors
+RED=$'\033[0;91m'
+GREEN=$'\033[0;92m'
+YELLOW=$'\033[0;93m'
+CYAN=$'\033[0;96m'
+WHITE=$'\033[0;97m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
 
-NO_COLOR=$'\033[0m'
-RESET_FORMAT=$'\033[0m'
-BOLD_TEXT=$'\033[1m'
-UNDERLINE_TEXT=$'\033[4m'
+# Error handler
+trap 'rc=$?; echo; echo "${RED}${BOLD}ERROR: Script failed at line ${LINENO} (exit code: ${rc}).${RESET}"; exit "$rc"' ERR
 
-clear
+clear || true
 
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}   PERKVERSE | EXECUTION STARTING 🚀   ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================${RESET_FORMAT}"
-echo
+echo "${CYAN}${BOLD}"
+echo "=========================================="
+echo "       PERKVERSE | GSP074 🚀"
+echo "   Cloud Storage: Qwik Start - CLI/SDK"
+echo "=========================================="
+echo "${RESET}"
 
-# Check authentication and project
-gcloud auth list
-gcloud config list project
-
-PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
-
-if [[ -z "$PROJECT_ID" || "$PROJECT_ID" == "(unset)" ]]; then
-    echo "${RED_TEXT}ERROR: Google Cloud project is not set.${RESET_FORMAT}"
+# Check tools
+if ! command -v gcloud >/dev/null 2>&1; then
+    echo "${RED}ERROR: gcloud CLI is not available.${RESET}"
     exit 1
 fi
+
+# Check project
+PROJECT_ID="$(gcloud config get-value project 2>/dev/null || true)"
+
+if [[ -z "$PROJECT_ID" || "$PROJECT_ID" == "(unset)" ]]; then
+    echo "${RED}ERROR: Google Cloud project is not set.${RESET}"
+    echo "Set your lab project, then run this script again."
+    exit 1
+fi
+
+echo "${GREEN}Project: ${PROJECT_ID}${RESET}"
+gcloud auth list
+gcloud config list project
 
 # Lab region
 gcloud config set compute/region us-east1
@@ -48,104 +56,109 @@ gcloud config set compute/region us-east1
 BUCKET_NAME="${PROJECT_ID}-techcode"
 
 echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 1: Create a Cloud Storage bucket${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}TASK 1: Create a Cloud Storage bucket${RESET}"
 
 if gcloud storage buckets describe "gs://${BUCKET_NAME}" >/dev/null 2>&1; then
-    echo "${YELLOW_TEXT}Bucket already exists; reusing it.${RESET_FORMAT}"
+    echo "${YELLOW}Bucket already exists; reusing it.${RESET}"
 else
-    gcloud storage buckets create "gs://${BUCKET_NAME}"
+    gcloud storage buckets create "gs://${BUCKET_NAME}" \
+        --location=us-east1
 fi
 
-echo "${GREEN_TEXT}Task 1 command completed.${RESET_FORMAT}"
+echo "${GREEN}Task 1 command completed.${RESET}"
 
-# Download Ada Lovelace image
 echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 2: Upload an object into your bucket${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}TASK 2: Upload an object${RESET}"
 
-curl -fL \
-  "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Ada_Lovelace_portrait.jpg/800px-Ada_Lovelace_portrait.jpg" \
-  -o ada.jpg
+if ! curl -fLsS \
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Ada_Lovelace_portrait.jpg/800px-Ada_Lovelace_portrait.jpg" \
+    -o ada.jpg; then
+    echo "${RED}ERROR: Could not download the image.${RESET}"
+    exit 1
+fi
 
-gcloud storage cp ada.jpg "gs://${BUCKET_NAME}/"
+gcloud storage cp ada.jpg "gs://${BUCKET_NAME}/ada.jpg"
 
-echo "${GREEN_TEXT}Task 2 command completed.${RESET_FORMAT}"
+echo "${GREEN}Task 2 command completed.${RESET}"
 
-# Download object from bucket
 echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 3: Download an object from your bucket${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}TASK 3: Download an object${RESET}"
 
-gcloud storage cp "gs://${BUCKET_NAME}/ada.jpg" .
+gcloud storage cp "gs://${BUCKET_NAME}/ada.jpg" ./ada-downloaded.jpg
 
-echo "${GREEN_TEXT}Task 3 command completed.${RESET_FORMAT}"
+echo "${GREEN}Task 3 command completed.${RESET}"
 
-# Copy object into a folder
 echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 4: Copy an object to a folder${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}TASK 4: Copy an object to a folder${RESET}"
 
 gcloud storage cp \
-  "gs://${BUCKET_NAME}/ada.jpg" \
-  "gs://${BUCKET_NAME}/image-folder/"
+    "gs://${BUCKET_NAME}/ada.jpg" \
+    "gs://${BUCKET_NAME}/image-folder/ada.jpg"
 
-echo "${GREEN_TEXT}Task 4 command completed.${RESET_FORMAT}"
+echo "${GREEN}Task 4 command completed.${RESET}"
 
-# List bucket contents
 echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 5: List bucket contents${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}TASK 5: List bucket contents${RESET}"
 
-gcloud storage ls "gs://${BUCKET_NAME}"
+gcloud storage ls "gs://${BUCKET_NAME}/"
 
-echo "${GREEN_TEXT}Task 5 command completed.${RESET_FORMAT}"
+echo "${GREEN}Task 5 command completed.${RESET}"
 
-# List object details
 echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 6: List details for ada.jpg${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}TASK 6: List object details${RESET}"
 
 gcloud storage ls -l "gs://${BUCKET_NAME}/ada.jpg"
 
-echo "${GREEN_TEXT}Task 6 command completed.${RESET_FORMAT}"
-
-# Make object public
-echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 7: Make your object publicly accessible${RESET_FORMAT}"
-
-gcloud storage objects update \
-  "gs://${BUCKET_NAME}/ada.jpg" \
-  --add-acl-grant=entity=allUsers,role=READER
+echo "${GREEN}Task 6 command completed.${RESET}"
 
 echo
-echo "${GREEN_TEXT}${BOLD_TEXT}Task 7 command completed.${RESET_FORMAT}"
-echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}IMPORTANT:${RESET_FORMAT}"
-echo "Go to the Google Skills lab page and click Check my progress for:"
-echo "Make your object publicly accessible"
-echo
-read -r -p "After checking Task 7, press ENTER to continue to Task 8..."
+echo "${YELLOW}${BOLD}TASK 7: Make object publicly accessible${RESET}"
 
-# Remove public access
-echo
-echo "${YELLOW_TEXT}${BOLD_TEXT}Task 8: Remove public access${RESET_FORMAT}"
+echo "Checking bucket access configuration..."
 
-gcloud storage objects update \
-  "gs://${BUCKET_NAME}/ada.jpg" \
-  --remove-acl-grant=allUsers
+if gcloud storage buckets describe "gs://${BUCKET_NAME}" \
+    --format="value(iamConfiguration.uniformBucketLevelAccess.enabled)" \
+    2>/dev/null | grep -qi '^true$'; then
 
-echo "${GREEN_TEXT}Task 8 command completed.${RESET_FORMAT}"
+    echo "${YELLOW}Uniform bucket-level access is enabled.${RESET}"
+    echo "Object ACL changes may be blocked by this configuration."
+    echo "Follow the official lab instructions for the required access setting."
+else
+    gcloud storage objects update \
+        "gs://${BUCKET_NAME}/ada.jpg" \
+        --add-acl-grant=entity=allUsers,role=READER
+fi
 
-# Delete root object, as described in the lab's cleanup section
 echo
-read -r -p "Task 7 progress checked? Press ENTER to delete the original ada.jpg object, or Ctrl+C to keep it..."
+echo "${CYAN}${BOLD}PAUSE: CHECK YOUR LAB PROGRESS${RESET}"
+echo "Open the Google Skills lab page."
+echo "Click Check my progress for the public-access task."
+echo
+read -r -p "After checking progress, press ENTER to continue..."
 
-gcloud storage rm "gs://${BUCKET_NAME}/ada.jpg"
+echo
+echo "${YELLOW}${BOLD}TASK 8: Remove public access${RESET}"
 
-# Final message
+if gcloud storage buckets describe "gs://${BUCKET_NAME}" \
+    --format="value(iamConfiguration.uniformBucketLevelAccess.enabled)" \
+    2>/dev/null | grep -qi '^true$'; then
+
+    echo "${YELLOW}Bucket uses uniform bucket-level access."
+    echo "No object ACL removal was attempted.${RESET}"
+else
+    gcloud storage objects update \
+        "gs://${BUCKET_NAME}/ada.jpg" \
+        --remove-acl-grant=allUsers
+fi
+
 echo
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}          🎉 SCRIPT EXECUTION FINISHED! 🎉           ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
+echo "${GREEN}${BOLD}SCRIPT TASKS FINISHED${RESET}"
 echo
-echo "${WHITE_TEXT}Bucket: gs://${BUCKET_NAME}${RESET_FORMAT}"
-echo "${YELLOW_TEXT}${BOLD_TEXT}${UNDERLINE_TEXT}YouTube: https://www.youtube.com/@PerkVers${RESET_FORMAT}"
-echo "${GREEN_TEXT}${BOLD_TEXT}🔥 Like • Share • Subscribe for more Arcade Labs${RESET_FORMAT}"
+echo "${WHITE}Bucket: gs://${BUCKET_NAME}${RESET}"
+echo "${WHITE}Uploaded object: gs://${BUCKET_NAME}/ada.jpg${RESET}"
 echo
-echo "${YELLOW_TEXT}Now check the remaining lab progress on Google Skills.${RESET_FORMAT}"
+echo "${YELLOW}${BOLD}PERKVERSE | @PerkVers${RESET}"
+echo "${GREEN}Like • Share • Subscribe for more Arcade Labs!${RESET}"
+echo
+echo "Check your Google Skills lab progress before ending the lab."
 ```
