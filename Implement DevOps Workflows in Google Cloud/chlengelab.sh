@@ -1,15 +1,16 @@
 #!/bin/bash
 set -Eeuo pipefail
 # ==========================================================
-# GSP330 FINAL (v3) - Tasks 1-6 in ONE script. Safe to re-run from scratch.
-# Fixes: git config before git init, redHandler uses lab's exact code (no fmt).
+# GSP330 FINAL (v4) - Tasks 1-6 in ONE script. Safe to re-run from scratch.
+# Fixes: git config before git init, redHandler uses the lab's exact code (no fmt),
+#        Dockerfile EXPOSE lookup no longer aborts the script.
 # Run in Cloud Shell:  bash ~/gsp330-final.sh
 # ==========================================================
 G=$(tput setaf 2 2>/dev/null || true); R=$(tput setaf 1 2>/dev/null || true)
 Y=$(tput setaf 3 2>/dev/null || true); N=$(tput sgr0 2>/dev/null || true)
 step(){ echo; echo "${Y}=== $* ===${N}"; }
 fail(){ echo "${R}ERROR: $*${N}" >&2; exit 1; }
-trap 'echo "${R}FAILED at line $LINENO - upar ka error copy karke bhejo.${N}" >&2' ERR
+trap 'echo "${R}FAILED at line $LINENO - check the error message above.${N}" >&2' ERR
 
 export PROJECT_ID; PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
 [[ -n "$PROJECT_ID" ]] || fail "No project set."
@@ -74,7 +75,7 @@ gcloud builds triggers describe sample-app-dev-deploy --region="$REGION" >/dev/n
     --service-account="$SA" --region="$REGION"
 
 # ---------------- helpers ----------------
-PORT="$(grep -iE '^\s*EXPOSE' Dockerfile 2>/dev/null | head -n1 | awk '{print $2}' | sed 's#/.*##')"; PORT="${PORT:-8080}"
+PORT="$(grep -iE '^[[:space:]]*EXPOSE' Dockerfile 2>/dev/null | head -n1 | awk '{print $2}' | sed 's#/.*##' || true)"; PORT="${PORT:-8080}"
 echo "Container port (Dockerfile): $PORT"
 
 img_from_cfg(){ # $1=cloudbuild file  $2=fallback image name
@@ -194,4 +195,4 @@ echo "Prod image now: $(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.
 code prod prod-deployment-service /red 404
 code dev dev-deployment-service /red 200
 
-echo; echo "${G}DONE - Skills Boost mein sab tasks par 'Check my progress' click karo.${N}"
+echo; echo "${G}DONE - Click 'Check my progress' on every task in Skills Boost.${N}"
