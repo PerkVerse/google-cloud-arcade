@@ -59,15 +59,49 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --role="roles/container.developer" \
   --quiet
 
+
 step "Create Artifact Registry repository"
 
-if ! gcloud artifacts repositories describe "$REPO" \
-  --location="$REGION" >/dev/null 2>&1; then
+echo "Checking Artifact Registry API..."
+gcloud services enable artifactregistry.googleapis.com \
+  --project="$PROJECT_ID" || {
+    echo "ERROR: Artifact Registry API enable nahi hui."
+    exit 1
+  }
+
+echo "Checking repository: $REPO"
+
+if gcloud artifacts repositories describe "$REPO" \
+  --location="$REGION" \
+  --project="$PROJECT_ID" >/dev/null 2>&1; then
+
+  echo "Repository already exists. Skipping creation."
+
+else
+  echo "Repository not found. Creating it..."
+
   gcloud artifacts repositories create "$REPO" \
     --repository-format=docker \
     --location="$REGION" \
-    --description="GSP330 application repository"
+    --description="GSP330 application repository" \
+    --project="$PROJECT_ID" || {
+
+      echo "Creation command failed. Checking whether repository now exists..."
+
+      gcloud artifacts repositories describe "$REPO" \
+        --location="$REGION" \
+        --project="$PROJECT_ID" >/dev/null 2>&1 || {
+          echo "ERROR: Repository create nahi hui."
+          echo "Check the permission/API error shown above."
+          exit 1
+        }
+    }
 fi
+
+echo "Verifying repository..."
+gcloud artifacts repositories describe "$REPO" \
+  --location="$REGION" \
+  --project="$PROJECT_ID"
 
 step "Create GKE cluster"
 
