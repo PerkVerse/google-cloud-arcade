@@ -157,41 +157,80 @@ build cloudbuild.yaml
 expose_lb prod prod-deployment-service
 code prod prod-deployment-service /blue 200
 
-# ---------------- TASK 5 ----------------
-step "Task 5: v2.0 dev"
-git checkout dev
-python_edit_main
-sed -i 's/v1\.0/v2.0/g' cloudbuild-dev.yaml dev/deployment.yaml
+#!/bin/bash
+set -Eeuo pipefail
+trap 'echo "FAILED at line $LINENO - error bhejo" >&2' ERR
+PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
+GIT_SERVER_IP="$(gcloud compute instances describe git-server --zone=us-west1-b --format='get(networkInterfaces[0].accessConfigs[0].natIP)')"
+AUTH="http://giteaadmin:GiteaPassword123@${GIT_SERVER_IP}:3000/giteaadmin/sample-app.git"
+gcloud container clusters get-credentials hello-cluster --zone=us-west1-b >/dev/null 2>&1
+cd ~/sample-app
+git config --global user.name "Student"; git config --global user.email "student@qwiklabs.net"
+
+cat > /tmp/editmain.py <<'PY'
+import re
+s=open('main.go').read()
+newmain='''func main() {
+	http.HandleFunc("/blue", blueHandler)
+	http.HandleFunc("/red", redHandler)
+	http.ListenAndServe(":8080", nil)
+}'''
+s=re.sub(r'func main\(\)\s*\{.*?\n\}', newmain, s, count=1, flags=re.S)
+s=re.sub(r'\n*func redHandler\(.*?\n\}\n?', '\n', s, flags=re.S)
+s=s.rstrip('\n')+'''
+
+func redHandler(w http.ResponseWriter, r *http.Request) {
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 0, 0, 255}}, image.ZP, draw.Src)
+	w.Header().Set("Content-Type", "image/png")
+	png.Encode(w, img)
+}
+'''
+open('main.go','w').write(s)
+PY
+
+code(){ local ip c=""; ip="$(kubectl get svc "$2" -n "$1" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  for _ in $(seq 1 24); do c="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "http://${ip}:8080$3" || true)"
+    [[ "$c" == "$4" ]] && break; sleep 10; done; echo "$1 $3 -> HTTP $c (expected $4)"; }
+
+echo "=== prod ka v1.0 commit save ==="
+git checkout -q master
+V1_COMMIT="$(git rev-parse HEAD)"
+PROD_IMG_V1="$(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
+echo "prod abhi: $PROD_IMG_V1"
+
+echo "=== TASK 5: dev v2.0 ==="
+git checkout -q dev
+python3 /tmp/editmain.py
+grep -q 'v2.0' cloudbuild-dev.yaml || sed -i 's/v1\.0/v2.0/g' cloudbuild-dev.yaml
+grep -q 'v2.0' dev/deployment.yaml || sed -i 's/v1\.0/v2.0/g' dev/deployment.yaml
 git add . && git commit -qm "Deploy v2.0 on dev" || true
 git push "$AUTH" dev
-build cloudbuild-dev.yaml
+gcloud builds submit --config=cloudbuild-dev.yaml .
 kubectl rollout status deployment -n dev --timeout=240s || true
 code dev dev-deployment-service /red 200
 
-step "Task 5: v2.0 prod"
-git checkout master
-python_edit_main
+echo "=== TASK 5: prod v2.0 ==="
+git checkout -q master
+python3 /tmp/editmain.py
 sed -i 's/v1\.0/v2.0/g' cloudbuild.yaml prod/deployment.yaml
 git add . && git commit -qm "Deploy v2.0 on master" || true
 git push "$AUTH" master
-build cloudbuild.yaml
+gcloud builds submit --config=cloudbuild.yaml .
 kubectl rollout status deployment -n prod --timeout=240s || true
 code prod prod-deployment-service /red 200
 
-# ---------------- TASK 6 ----------------
-step "Task 6: Roll back prod to v1.0"
+echo "=== TASK 6: rollback prod to v1.0 ==="
 rm -rf /tmp/rollback; git worktree prune
 git worktree add -f /tmp/rollback "$V1_COMMIT" >/dev/null 2>&1
-( cd /tmp/rollback && build cloudbuild.yaml )
+( cd /tmp/rollback && gcloud builds submit --config=cloudbuild.yaml . )
 kubectl rollout status deployment -n prod --timeout=240s || true
-CUR="$(kubectl get deploy "$(dep_name prod)" -n prod -o jsonpath='{.spec.template.spec.containers[0].image}')"
+CUR="$(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
 if [[ "$CUR" != *":v1.0" ]]; then
-  echo "Forcing image to v1.0"
-  kubectl set image "deployment/$(dep_name prod)" "*=${PROD_IMG}" -n prod
+  kubectl set image "deployment/$(kubectl get deploy -n prod -o jsonpath='{.items[0].metadata.name}')" "*=${PROD_IMG_V1}" -n prod
   kubectl rollout status deployment -n prod --timeout=240s || true
 fi
-echo "Prod image now: $(kubectl get deploy "$(dep_name prod)" -n prod -o jsonpath='{.spec.template.spec.containers[0].image}')"
+echo "Prod image: $(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
 code prod prod-deployment-service /red 404
 code dev dev-deployment-service /red 200
-
-echo; echo "${G}DONE - Skills Boost mein sab tasks par 'Check my progress' click karo.${N}"
+echo "DONE - Skills Boost mein Check my progress dabao"
