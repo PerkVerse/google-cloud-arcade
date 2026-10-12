@@ -1,20 +1,19 @@
 #!/bin/bash
 set -Eeuo pipefail
 # ==========================================================
-# GSP330 - Implement DevOps Workflows in Google Cloud (Challenge Lab)
-# ONE script: Tasks 1-6.  Run in Cloud Shell:  bash gsp330-complete.sh
+# GSP330 FINAL (v3) - Tasks 1-6 in ONE script. Safe to re-run from scratch.
+# Fixes: git config before git init, redHandler uses lab's exact code (no fmt).
+# Run in Cloud Shell:  bash ~/gsp330-final.sh
 # ==========================================================
 G=$(tput setaf 2 2>/dev/null || true); R=$(tput setaf 1 2>/dev/null || true)
 Y=$(tput setaf 3 2>/dev/null || true); N=$(tput sgr0 2>/dev/null || true)
 step(){ echo; echo "${Y}=== $* ===${N}"; }
 fail(){ echo "${R}ERROR: $*${N}" >&2; exit 1; }
-trap 'echo "${R}Failed at line $LINENO - upar ka error bhejo.${N}" >&2' ERR
+trap 'echo "${R}FAILED at line $LINENO - upar ka error copy karke bhejo.${N}" >&2' ERR
 
 export PROJECT_ID; PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
 [[ -n "$PROJECT_ID" ]] || fail "No project set."
 export PROJECT_NUMBER; PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
-
-# Lab values (auto-detect from git-server, default to lab's us-west1-b)
 export ZONE; ZONE="$(gcloud compute instances list --filter='name=git-server' --format='value(zone.basename())' 2>/dev/null | head -n1 || true)"
 ZONE="${ZONE:-us-west1-b}"
 export REGION="${ZONE%-*}"
@@ -52,7 +51,6 @@ rm -rf ~/sample-app; mkdir -p ~/sample-app
 gcloud storage cp -r "gs://spls/gsp330/sample-app/*" ~/sample-app/
 for f in ~/sample-app/cloudbuild-dev.yaml ~/sample-app/cloudbuild.yaml; do
   sed -i "s/<your-region>/${REGION}/g; s/<your-zone>/${ZONE}/g; s/<version>/v1.0/g" "$f"
-  # zonal cluster: make sure the zone variable is not stored under the REGION name
   sed -i "s/CLOUDSDK_COMPUTE_REGION=${ZONE}/CLOUDSDK_COMPUTE_ZONE=${ZONE}/g" "$f"
 done
 cd ~/sample-app
@@ -62,7 +60,7 @@ git remote add origin "http://${GIT_SERVER_IP}:3000/giteaadmin/sample-app.git"
 git branch -m master
 git add . && git commit -qm "initial commit"
 git push -f -u "$AUTH" master
-git checkout -b dev
+git checkout -q -b dev
 git push -f -u "$AUTH" dev
 
 # ---------------- TASK 3 ----------------
@@ -76,25 +74,28 @@ gcloud builds triggers describe sample-app-dev-deploy --region="$REGION" >/dev/n
     --service-account="$SA" --region="$REGION"
 
 # ---------------- helpers ----------------
-PORT="$(grep -iE '^\s*EXPOSE' Dockerfile 2>/dev/null | head -n1 | awk '{print $2}' | tr -d '/tcp')"; PORT="${PORT:-8080}"
+PORT="$(grep -iE '^\s*EXPOSE' Dockerfile 2>/dev/null | head -n1 | awk '{print $2}' | sed 's#/.*##')"; PORT="${PORT:-8080}"
+echo "Container port (Dockerfile): $PORT"
 
-img_from_cfg(){ # extract image reference from cloudbuild file, substitute project id
-  grep -oE '[A-Za-z0-9.<>_-]*docker\.pkg\.dev/[^ "'"'"',]+' "$1" | head -n1 \
-    | sed "s/\${PROJECT_ID}/${PROJECT_ID}/g; s/\$PROJECT_ID/${PROJECT_ID}/g"
+img_from_cfg(){ # $1=cloudbuild file  $2=fallback image name
+  local i
+  i="$(grep -oE '[A-Za-z0-9.<>_-]*docker\.pkg\.dev/[^ "'"'"',]+' "$1" | head -n1 || true)"
+  [[ -n "$i" ]] || i="${REGION}-docker.pkg.dev/\$PROJECT_ID/${REPO}/$2:v1.0"
+  echo "$i" | sed "s/\${PROJECT_ID}/${PROJECT_ID}/g; s/\$PROJECT_ID/${PROJECT_ID}/g"
 }
 set_manifest_image(){ # manifest image
   if grep -q '<todo>' "$1"; then sed -i "s|<todo>|$2|" "$1"
   else sed -i -E "0,/^(\s*-?\s*image:\s*).*/s||\1$2|" "$1"; fi
 }
 build(){ # config
-  gcloud builds submit --config="$1" . && return 0
-  echo "${Y}Build failed - granting build permissions and retrying with --region${N}"
+  gcloud builds submit --config="$1" --region="$REGION" . && return 0
+  echo "${Y}Build failed - granting build permissions, retrying${N}"
   for r in roles/artifactregistry.writer roles/container.developer roles/logging.logWriter roles/storage.objectViewer; do
     gcloud projects add-iam-policy-binding "$PROJECT_ID" \
       --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" --role="$r" --quiet >/dev/null 2>&1 || true
   done
   sleep 15
-  gcloud builds submit --config="$1" --region="$REGION" . || fail "Build failed: $1"
+  gcloud builds submit --config="$1" --region="$REGION" . || gcloud builds submit --config="$1" . || fail "Build failed: $1"
 }
 dep_name(){ kubectl get deploy -n "$1" -o jsonpath='{.items[0].metadata.name}'; }
 expose_lb(){ # ns svcname
@@ -104,69 +105,13 @@ expose_lb(){ # ns svcname
 lb_ip(){ local ip=""; for _ in $(seq 1 45); do
     ip="$(kubectl get svc "$2" -n "$1" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
     [[ -n "$ip" ]] && break; sleep 8; done; echo "$ip"; }
-code(){ # ns svc path -> waits until expected code or timeout
-  local ip; ip="$(lb_ip "$1" "$2")"; local c=""
+code(){ # ns svc path expected
+  local ip c=""; ip="$(lb_ip "$1" "$2")"
   for _ in $(seq 1 24); do
     c="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "http://${ip}:8080$3" || true)"
     [[ "$c" == "$4" ]] && break; sleep 10; done
   echo "$1 $3 -> HTTP $c (expected $4)"
 }
-python_edit_main(){ cat > /tmp/editmain.py <<'PY'
-import re
-s=open('main.go').read()
-newmain='''func main() {
-	http.HandleFunc("/blue", blueHandler)
-	http.HandleFunc("/red", redHandler)
-	http.ListenAndServe(":8080", nil)
-}'''
-s=re.sub(r'func main\(\)\s*\{.*?\n\}', newmain, s, count=1, flags=re.S)
-if 'func redHandler' not in s:
-    s=s.rstrip('\n')+'''
-
-func redHandler(w http.ResponseWriter, r *http.Request) {
-	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
-	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 0, 0, 255}}, image.ZP, draw.Src)
-	w.Header().Set("Content-Type", "image/png")
-	png.Encode(w, img)
-}
-'''
-open('main.go','w').write(s)
-PY
-python3 /tmp/editmain.py; }
-
-# ---------------- TASK 4 ----------------
-step "Task 4: v1.0 dev"
-cd ~/sample-app
-git checkout dev
-DEV_IMG="$(img_from_cfg cloudbuild-dev.yaml)"; echo "dev image: $DEV_IMG"
-set_manifest_image dev/deployment.yaml "$DEV_IMG"
-git add . && git commit -qm "Deploy v1.0 on dev" || true
-git push "$AUTH" dev
-build cloudbuild-dev.yaml
-expose_lb dev dev-deployment-service
-code dev dev-deployment-service /blue 200
-
-step "Task 4: v1.0 prod"
-git checkout master
-PROD_IMG="$(img_from_cfg cloudbuild.yaml)"; echo "prod image: $PROD_IMG"
-set_manifest_image prod/deployment.yaml "$PROD_IMG"
-git add . && git commit -qm "Deploy v1.0 on master" || true
-git push "$AUTH" master
-V1_COMMIT="$(git rev-parse HEAD)"
-build cloudbuild.yaml
-expose_lb prod prod-deployment-service
-code prod prod-deployment-service /blue 200
-
-#!/bin/bash
-set -Eeuo pipefail
-trap 'echo "FAILED at line $LINENO - error bhejo" >&2' ERR
-PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
-GIT_SERVER_IP="$(gcloud compute instances describe git-server --zone=us-west1-b --format='get(networkInterfaces[0].accessConfigs[0].natIP)')"
-AUTH="http://giteaadmin:GiteaPassword123@${GIT_SERVER_IP}:3000/giteaadmin/sample-app.git"
-gcloud container clusters get-credentials hello-cluster --zone=us-west1-b >/dev/null 2>&1
-cd ~/sample-app
-git config --global user.name "Student"; git config --global user.email "student@qwiklabs.net"
-
 cat > /tmp/editmain.py <<'PY'
 import re
 s=open('main.go').read()
@@ -189,48 +134,64 @@ func redHandler(w http.ResponseWriter, r *http.Request) {
 open('main.go','w').write(s)
 PY
 
-code(){ local ip c=""; ip="$(kubectl get svc "$2" -n "$1" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-  for _ in $(seq 1 24); do c="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "http://${ip}:8080$3" || true)"
-    [[ "$c" == "$4" ]] && break; sleep 10; done; echo "$1 $3 -> HTTP $c (expected $4)"; }
+# ---------------- TASK 4 ----------------
+step "Task 4: v1.0 dev"
+cd ~/sample-app
+git checkout -q dev
+DEV_IMG="$(img_from_cfg cloudbuild-dev.yaml hello-cloudbuild-dev)"; echo "dev image: $DEV_IMG"
+set_manifest_image dev/deployment.yaml "$DEV_IMG"
+git add . && git commit -qm "Deploy v1.0 on dev" || true
+git push "$AUTH" dev
+build cloudbuild-dev.yaml
+expose_lb dev dev-deployment-service
+code dev dev-deployment-service /blue 200
 
-echo "=== prod ka v1.0 commit save ==="
+step "Task 4: v1.0 prod"
 git checkout -q master
+PROD_IMG="$(img_from_cfg cloudbuild.yaml hello-cloudbuild)"; echo "prod image: $PROD_IMG"
+set_manifest_image prod/deployment.yaml "$PROD_IMG"
+git add . && git commit -qm "Deploy v1.0 on master" || true
+git push "$AUTH" master
 V1_COMMIT="$(git rev-parse HEAD)"
-PROD_IMG_V1="$(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
-echo "prod abhi: $PROD_IMG_V1"
+build cloudbuild.yaml
+expose_lb prod prod-deployment-service
+code prod prod-deployment-service /blue 200
 
-echo "=== TASK 5: dev v2.0 ==="
+# ---------------- TASK 5 ----------------
+step "Task 5: v2.0 dev"
 git checkout -q dev
 python3 /tmp/editmain.py
-grep -q 'v2.0' cloudbuild-dev.yaml || sed -i 's/v1\.0/v2.0/g' cloudbuild-dev.yaml
-grep -q 'v2.0' dev/deployment.yaml || sed -i 's/v1\.0/v2.0/g' dev/deployment.yaml
+sed -i 's/v1\.0/v2.0/g' cloudbuild-dev.yaml dev/deployment.yaml
 git add . && git commit -qm "Deploy v2.0 on dev" || true
 git push "$AUTH" dev
-gcloud builds submit --config=cloudbuild-dev.yaml .
+build cloudbuild-dev.yaml
 kubectl rollout status deployment -n dev --timeout=240s || true
 code dev dev-deployment-service /red 200
 
-echo "=== TASK 5: prod v2.0 ==="
+step "Task 5: v2.0 prod"
 git checkout -q master
 python3 /tmp/editmain.py
 sed -i 's/v1\.0/v2.0/g' cloudbuild.yaml prod/deployment.yaml
 git add . && git commit -qm "Deploy v2.0 on master" || true
 git push "$AUTH" master
-gcloud builds submit --config=cloudbuild.yaml .
+build cloudbuild.yaml
 kubectl rollout status deployment -n prod --timeout=240s || true
 code prod prod-deployment-service /red 200
 
-echo "=== TASK 6: rollback prod to v1.0 ==="
+# ---------------- TASK 6 ----------------
+step "Task 6: Roll back prod to v1.0"
 rm -rf /tmp/rollback; git worktree prune
 git worktree add -f /tmp/rollback "$V1_COMMIT" >/dev/null 2>&1
-( cd /tmp/rollback && gcloud builds submit --config=cloudbuild.yaml . )
+( cd /tmp/rollback && build cloudbuild.yaml )
 kubectl rollout status deployment -n prod --timeout=240s || true
 CUR="$(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
 if [[ "$CUR" != *":v1.0" ]]; then
-  kubectl set image "deployment/$(kubectl get deploy -n prod -o jsonpath='{.items[0].metadata.name}')" "*=${PROD_IMG_V1}" -n prod
+  echo "Forcing image back to v1.0"
+  kubectl set image "deployment/$(dep_name prod)" "*=${PROD_IMG}" -n prod
   kubectl rollout status deployment -n prod --timeout=240s || true
 fi
-echo "Prod image: $(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
+echo "Prod image now: $(kubectl get deploy -n prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
 code prod prod-deployment-service /red 404
 code dev dev-deployment-service /red 200
-echo "DONE - Skills Boost mein Check my progress dabao"
+
+echo; echo "${G}DONE - Skills Boost mein sab tasks par 'Check my progress' click karo.${N}"
