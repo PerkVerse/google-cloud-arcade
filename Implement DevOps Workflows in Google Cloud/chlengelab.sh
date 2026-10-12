@@ -188,89 +188,154 @@ echo "Those steps must match the exact supplied sample-app files."
 #!/bin/bash
 set -Eeuo pipefail
 
-# PERKVERSE - GSP330 Tasks 4, 5 and 6
-# Run after Tasks 1-3 have successfully completed.
+cat > /tmp/perkverse-gsp330.sh <<'SCRIPT'
+#!/bin/bash
+set -Eeuo pipefail
 
-RED=$(tput setaf 1 2>/dev/null || true)
-GREEN=$(tput setaf 2 2>/dev/null || true)
-YELLOW=$(tput setaf 3 2>/dev/null || true)
-RESET=$(tput sgr0 2>/dev/null || true)
+PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
+REGION="us-east1"
+ZONE="us-east1-c"
+CLUSTER="hello-cluster"
+GIT_SERVER_IP="34.148.99.119"
+REPO_URL="http://giteaadmin:GiteaPassword123@${GIT_SERVER_IP}:3000/giteaadmin/sample-app.git"
 
-step() {
-  echo
-  echo "${YELLOW}========== $* ==========${RESET}"
-}
+cd ~/sample-app || exit 1
+git config user.name "PerkVerse"
+git config user.email "perkverse@example.com"
+git remote set-url origin "$REPO_URL"
 
 fail() {
-  echo "${RED}ERROR: $*${RESET}" >&2
+  echo
+  echo "ERROR: $*"
+  echo "Current branch: $(git branch --show-current)"
+  echo "Git status:"
+  git status --short || true
   exit 1
 }
 
-cd "$HOME/sample-app" || fail "~/sample-app not found"
-
-export PROJECT_ID
-PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
-export PROJECT_NUMBER
-PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" \
-  --format='value(projectNumber)')"
-export REGION="us-east1"
-export ZONE="us-east1-c"
-
-if [[ -z "${GIT_SERVER_IP:-}" ]]; then
-  export GIT_SERVER_IP
-  GIT_SERVER_IP="$(gcloud compute instances describe git-server \
-    --zone="$ZONE" \
-    --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
-fi
-
-AUTH_GIT_URL="http://giteaadmin:GiteaPassword123@${GIT_SERVER_IP}:3000/giteaadmin/sample-app.git"
-
-git config user.name "Student"
-git config user.email "student@qwiklabs.net"
-
-# Replace PROJECT_ID and the lab placeholders.
-for f in cloudbuild.yaml cloudbuild-dev.yaml \
-         dev/deployment.yaml prod/deployment.yaml; do
-  [[ -f "$f" ]] || fail "Missing required file: $f"
-  sed -i "s/PROJECT_ID/${PROJECT_ID}/g" "$f"
-  sed -i "s/<your-region>/${REGION}/g" "$f"
-  sed -i "s/<your-zone>/${ZONE}/g" "$f"
-done
-
-# Discover the image repository names from the build configuration.
-get_image() {
-  local file="$1"
-  grep -Eo 'us-east1-docker\.pkg\.dev/[^[:space:]"]+' "$file" |
-    head -n 1 | sed 's/[",]$//'
+commit_push() {
+  local branch="$1"
+  local message="$2"
+  shift 2
+  git add "$@"
+  if ! git diff --cached --quiet; then
+    git commit -m "$message"
+  fi
+  git push origin "$branch" || fail "Git push failed on $branch"
 }
 
-# Add the /red route and handler to main.go safely.
-add_red_handler() {
+build_retry() {
+  local config="$1"
+  local attempt
+  for attempt in 1 2; do
+    echo "Building with $config (attempt $attempt/2)"
+    if gcloud builds submit --project="$PROJECT_ID" \
+      --region="$REGION" --config="$config" .; then
+      return 0
+    fi
+    echo "Build failed. Latest build log:"
+    local id
+    id="$(gcloud builds list --project="$PROJECT_ID" --region="$REGION" \
+      --limit=1 --sort-by='~createTime' --format='value(id)' 2>/dev/null || true)"
+    if [[ -n "$id" ]]; then
+      gcloud builds log "$id" --project="$PROJECT_ID" --region="$REGION" 2>&1 | tail -70 || true
+    fi
+    [[ "$attempt" == 1 ]] && sleep 5
+  done
+  fail "Build failed twice using $config. Read the error above."
+}
+
+set_config() {
+  local config="$1" image="$2" version="$3" manifest="$4"
+  python3 - "$config" "$image" "$version" "$manifest" "$PROJECT_ID" "$REGION" "$ZONE" <<'PY'
+import sys, re
+config, image, version, manifest, project, region, zone = sys.argv[1:]
+s = open(config).read()
+s = re.sub(r'us-east1-docker\.pkg\.dev/[^/]+/my-repository/[^:]+:[^\'"]+',
+           f'us-east1-docker.pkg.dev/$PROJECT_ID/my-repository/{image}:{version}', s)
+s = s.replace('<version>', version).replace('<your-region>', region).replace('<your-zone>', zone)
+s = s.replace('CLOUDSDK_COMPUTE_REGION=us-east1-c', 'CLOUDSDK_COMPUTE_ZONE=us-east1-c')
+s = s.replace('CLOUDSDK_COMPUTE_REGION=us-east1', 'CLOUDSDK_COMPUTE_ZONE=us-east1-c')
+open(config, 'w').write(s)
+
+p = open(manifest).read()
+p = re.sub(r'image:\s*.*', f'image: us-east1-docker.pkg.dev/{project}/my-repository/{image}:{version}', p, count=1)
+open(manifest, 'w').write(p)
+PY
+}
+
+echo "========== CHECK CLUSTER =========="
+gcloud container clusters get-credentials "$CLUSTER" --zone="$ZONE" --project="$PROJECT_ID" \
+  || fail "Cannot access cluster $CLUSTER in $ZONE"
+
+echo "========== TASK 4: DEV v1.0 =========="
+git checkout dev || fail "Cannot switch to dev branch"
+set_config cloudbuild-dev.yaml hello-cloudbuild-dev v1.0 dev/deployment.yaml
+commit_push dev "Fix dev v1.0 image configuration" cloudbuild-dev.yaml dev/deployment.yaml
+build_retry cloudbuild-dev.yaml
+
+echo "========== TASK 4: PRODUCTION v1.0 =========="
+git checkout master || fail "Cannot switch to master branch"
+set_config cloudbuild.yaml hello-cloudbuild v1.0 prod/deployment.yaml
+commit_push master "Deploy production v1.0" cloudbuild.yaml prod/deployment.yaml
+build_retry cloudbuild.yaml
+
+echo "========== CREATE LOAD BALANCER SERVICES =========="
+kubectl get namespace dev >/dev/null 2>&1 || kubectl create namespace dev
+kubectl get namespace prod >/dev/null 2>&1 || kubectl create namespace prod
+
+cat > /tmp/dev-service.yaml <<'YAML'
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-deployment-service
+  namespace: dev
+spec:
+  type: LoadBalancer
+  selector:
+    app: dev-app
+  ports:
+  - port: 8080
+    targetPort: 8080
+YAML
+
+cat > /tmp/prod-service.yaml <<'YAML'
+apiVersion: v1
+kind: Service
+metadata:
+  name: prod-deployment-service
+  namespace: prod
+spec:
+  type: LoadBalancer
+  selector:
+    app: production-app
+  ports:
+  - port: 8080
+    targetPort: 8080
+YAML
+
+kubectl apply -f /tmp/dev-service.yaml || fail "Could not create dev service"
+kubectl apply -f /tmp/prod-service.yaml || fail "Could not create production service"
+
+echo "========== CHECK BLUE ENDPOINTS =========="
+kubectl rollout status deployment/development-deployment -n dev --timeout=180s \
+  || fail "Dev deployment did not become ready"
+kubectl rollout status deployment/production-deployment -n prod --timeout=180s \
+  || fail "Production deployment did not become ready"
+
+echo "========== TASK 5: ADD RED HANDLER ON DEV =========="
+git checkout dev || fail "Cannot switch to dev"
 python3 - <<'PY'
-from pathlib import Path
-import re
+p = "main.go"
+s = open(p).read()
+if 'http.HandleFunc("/red", redHandler)' not in s:
+    needle = 'http.HandleFunc("/blue", blueHandler)'
+    if needle not in s:
+        raise SystemExit('Cannot find blue route in main.go; stopping safely.')
+    s = s.replace(needle, needle + '\n\thttp.HandleFunc("/red", redHandler)', 1)
+if 'func redHandler(' not in s:
+    s += '''
 
-p = Path("main.go")
-s = p.read_text()
-
-main_pattern = r'func main\(\)\s*\{.*?\n\}'
-m = re.search(main_pattern, s, re.S)
-if not m:
-    raise SystemExit("ERROR: Could not find func main() in main.go")
-
-main = m.group(0)
-if 'http.HandleFunc("/red", redHandler)' not in main:
-    if 'http.HandleFunc("/blue", blueHandler)' not in main:
-        raise SystemExit("ERROR: Existing /blue handler registration not found")
-    main = main.replace(
-        'http.HandleFunc("/blue", blueHandler)',
-        'http.HandleFunc("/blue", blueHandler)\n\thttp.HandleFunc("/red", redHandler)',
-        1
-    )
-    s = s[:m.start()] + main + s[m.end():]
-
-if not re.search(r'func\s+redHandler\s*\(', s):
-    handler = r'''
 func redHandler(w http.ResponseWriter, r *http.Request) {
     img := image.NewRGBA(image.Rect(0, 0, 100, 100))
     draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 0, 0, 255}}, image.ZP, draw.Src)
@@ -278,217 +343,59 @@ func redHandler(w http.ResponseWriter, r *http.Request) {
     png.Encode(w, img)
 }
 '''
-    s += "\n" + handler
-
-# Ensure required imports exist.
-imports = []
-for name in ['"image"', '"image/color"', '"image/draw"', '"image/png"']:
-    if name not in s:
-        imports.append(name)
-
-if imports:
-    im = re.search(r'import\s*\((.*?)\)', s, re.S)
-    if im:
-        new_block = im.group(0)
-        for name in imports:
-            new_block = new_block[:-1] + '\t' + name + '\n)'
-        s = s[:im.start()] + new_block + s[im.end():]
-    else:
-        im = re.search(r'import\s+"[^"]+"', s)
-        if not im:
-            raise SystemExit("ERROR: Could not safely update imports in main.go")
-        existing = re.findall(r'"[^"]+"', im.group(0))
-        all_imports = existing + imports
-        block = 'import (\n' + ''.join('\t' + x + '\n' for x in all_imports) + ')'
-        s = s[:im.start()] + block + s[im.end():]
-
-p.write_text(s)
+open(p, 'w').write(s)
 PY
-  gofmt -w main.go
-}
+gofmt -w main.go
+set_config cloudbuild-dev.yaml hello-cloudbuild-dev v2.0 dev/deployment.yaml
+commit_push dev "Deploy dev v2.0 with red endpoint" main.go cloudbuild-dev.yaml dev/deployment.yaml
+build_retry cloudbuild-dev.yaml
 
-# Ensure the deployment manifest references the right version.
-set_manifest_image() {
-  local manifest="$1"
-  local image="$2"
-  python3 - "$manifest" "$image" <<'PY'
-from pathlib import Path
-import re, sys
-p = Path(sys.argv[1])
-image = sys.argv[2]
-s = p.read_text()
-s = re.sub(r'(?m)^(\s*image:\s*).+$', lambda m: m.group(1) + image, s, count=1)
-if not re.search(r'(?m)^\s*image:\s*', s):
-    raise SystemExit(f"ERROR: No image field found in {p}")
-p.write_text(s)
+echo "========== TASK 5: ADD RED HANDLER ON PRODUCTION =========="
+git checkout master || fail "Cannot switch to master"
+python3 - <<'PY'
+p = "main.go"
+s = open(p).read()
+if 'http.HandleFunc("/red", redHandler)' not in s:
+    needle = 'http.HandleFunc("/blue", blueHandler)'
+    if needle not in s:
+        raise SystemExit('Cannot find blue route in main.go; stopping safely.')
+    s = s.replace(needle, needle + '\n\thttp.HandleFunc("/red", redHandler)', 1)
+if 'func redHandler(' not in s:
+    s += '''
+
+func redHandler(w http.ResponseWriter, r *http.Request) {
+    img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+    draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 0, 0, 255}}, image.ZP, draw.Src)
+    w.Header().Set("Content-Type", "image/png")
+    png.Encode(w, img)
+}
+'''
+open(p, 'w').write(s)
 PY
-}
+gofmt -w main.go
+set_config cloudbuild.yaml hello-cloudbuild v2.0 prod/deployment.yaml
+commit_push master "Deploy production v2.0 with red endpoint" main.go cloudbuild.yaml prod/deployment.yaml
+build_retry cloudbuild.yaml
 
-apply_deployment() {
-  local ns="$1"
-  local manifest="$2"
-  local deployment="$3"
-  local service="$4"
+echo "========== TASK 6: ROLLBACK PRODUCTION TO v1.0 =========="
+git checkout master || fail "Cannot switch to master for rollback"
+set_config cloudbuild.yaml hello-cloudbuild v2.0 prod/deployment.yaml
+# Task 6 requires the already-built v1.0 image. Do not rebuild it from v2.0 source.
+sed -i "s|image: .*|image: us-east1-docker.pkg.dev/${PROJECT_ID}/my-repository/hello-cloudbuild:v1.0|" prod/deployment.yaml
+commit_push master "Rollback production deployment to v1.0" prod/deployment.yaml
+kubectl apply -n prod -f prod/deployment.yaml || fail "Could not apply production rollback"
+kubectl rollout status deployment/production-deployment -n prod --timeout=180s \
+  || fail "Production rollback did not become ready"
 
-  kubectl apply -n "$ns" -f "$manifest"
-
-  kubectl rollout status "deployment/$deployment" \
-    -n "$ns" --timeout=300s
-
-  if ! kubectl get service "$service" -n "$ns" >/dev/null 2>&1; then
-    local target_port
-    target_port="$(awk '/EXPOSE/{print $2; exit}' Dockerfile)"
-    [[ -n "$target_port" ]] || target_port="8080"
-
-    kubectl expose deployment "$deployment" \
-      --name="$service" \
-      --type=LoadBalancer \
-      --port=8080 \
-      --target-port="$target_port" \
-      -n "$ns"
-  fi
-}
-
-# ==================== TASK 4: v1.0 ====================
-
-step "TASK 4 - Build first development deployment v1.0"
-
-git checkout dev
-sed -i 's/:v2\.0/:v1.0/g' cloudbuild-dev.yaml
-DEV_IMAGE="$(get_image cloudbuild-dev.yaml)"
-[[ -n "$DEV_IMAGE" ]] || fail "Cannot detect dev image from cloudbuild-dev.yaml"
-set_manifest_image dev/deployment.yaml "$DEV_IMAGE"
-
-git add .
-if ! git diff --cached --quiet; then
-  git commit -m "Deploy v1.0 on dev"
-fi
-git push "$AUTH_GIT_URL" dev
-gcloud builds submit --config=cloudbuild-dev.yaml .
-
-apply_deployment dev dev/deployment.yaml development-deployment dev-deployment-service
-
-step "Verify dev /blue endpoint"
-kubectl get service dev-deployment-service -n dev
-DEV_LB_IP=""
-for i in {1..30}; do
-  DEV_LB_IP="$(kubectl get service dev-deployment-service -n dev \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
-  [[ -n "$DEV_LB_IP" ]] && break
-  sleep 10
-done
-if [[ -n "$DEV_LB_IP" ]]; then
-  curl -sSI --max-time 20 "http://${DEV_LB_IP}:8080/blue" || true
-else
-  echo "Dev LoadBalancer IP is still pending."
-fi
-
-step "TASK 4 - Build first production deployment v1.0"
-
-git checkout master
-sed -i 's/:v2\.0/:v1.0/g' cloudbuild.yaml
-PROD_IMAGE="$(get_image cloudbuild.yaml)"
-[[ -n "$PROD_IMAGE" ]] || fail "Cannot detect prod image from cloudbuild.yaml"
-set_manifest_image prod/deployment.yaml "$PROD_IMAGE"
-
-git add .
-if ! git diff --cached --quiet; then
-  git commit -m "Deploy v1.0 on master"
-fi
-git push "$AUTH_GIT_URL" master
-gcloud builds submit --config=cloudbuild.yaml .
-
-apply_deployment prod prod/deployment.yaml production-deployment prod-deployment-service
-
-step "Verify production /blue endpoint"
-kubectl get service prod-deployment-service -n prod
-PROD_LB_IP=""
-for i in {1..30}; do
-  PROD_LB_IP="$(kubectl get service prod-deployment-service -n prod \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
-  [[ -n "$PROD_LB_IP" ]] && break
-  sleep 10
-done
-if [[ -n "$PROD_LB_IP" ]]; then
-  curl -sSI --max-time 20 "http://${PROD_LB_IP}:8080/blue" || true
-else
-  echo "Production LoadBalancer IP is still pending."
-fi
-
-# ==================== TASK 5: v2.0 ====================
-
-step "TASK 5 - Development v2.0 with /red endpoint"
-
-git checkout dev
-add_red_handler
-sed -i 's/:v1\.0/:v2.0/g' cloudbuild-dev.yaml
-DEV_IMAGE="$(get_image cloudbuild-dev.yaml)"
-[[ -n "$DEV_IMAGE" ]] || fail "Cannot detect dev v2 image"
-set_manifest_image dev/deployment.yaml "$DEV_IMAGE"
-
-git add .
-if ! git diff --cached --quiet; then
-  git commit -m "Deploy v2.0 on dev"
-fi
-git push "$AUTH_GIT_URL" dev
-gcloud builds submit --config=cloudbuild-dev.yaml .
-kubectl apply -n dev -f dev/deployment.yaml
-kubectl rollout status deployment/development-deployment \
-  -n dev --timeout=300s
-
-step "Verify dev /red endpoint"
-if [[ -n "$DEV_LB_IP" ]]; then
-  curl -sSI --max-time 20 "http://${DEV_LB_IP}:8080/red" || true
-fi
-
-step "TASK 5 - Production v2.0 with /red endpoint"
-
-git checkout master
-add_red_handler
-sed -i 's/:v1\.0/:v2.0/g' cloudbuild.yaml
-PROD_IMAGE="$(get_image cloudbuild.yaml)"
-[[ -n "$PROD_IMAGE" ]] || fail "Cannot detect prod v2 image"
-set_manifest_image prod/deployment.yaml "$PROD_IMAGE"
-
-git add .
-if ! git diff --cached --quiet; then
-  git commit -m "Deploy v2.0 on master"
-fi
-git push "$AUTH_GIT_URL" master
-gcloud builds submit --config=cloudbuild.yaml .
-kubectl apply -n prod -f prod/deployment.yaml
-kubectl rollout status deployment/production-deployment \
-  -n prod --timeout=300s
-
-step "Verify production /red endpoint"
-if [[ -n "$PROD_LB_IP" ]]; then
-  curl -sSI --max-time 20 "http://${PROD_LB_IP}:8080/red" || true
-fi
-
-# ==================== TASK 6: rollback ====================
-
-step "TASK 6 - Roll production back to v1.0"
-
-# Rebuild production using the v1.0 image config.
-sed -i 's/:v2\.0/:v1.0/g' cloudbuild.yaml
-PROD_IMAGE="$(get_image cloudbuild.yaml)"
-[[ -n "$PROD_IMAGE" ]] || fail "Cannot detect prod v1 image for rollback"
-set_manifest_image prod/deployment.yaml "$PROD_IMAGE"
-
-git add cloudbuild.yaml prod/deployment.yaml
-if ! git diff --cached --quiet; then
-  git commit -m "Rollback production to v1.0"
-fi
-git push "$AUTH_GIT_URL" master
-gcloud builds submit --config=cloudbuild.yaml .
-kubectl apply -n prod -f prod/deployment.yaml
-kubectl rollout status deployment/production-deployment \
-  -n prod --timeout=300s
-
-step "Verify rollback: /red should return 404"
-if [[ -n "$PROD_LB_IP" ]]; then
-  curl -sSI --max-time 20 "http://${PROD_LB_IP}:8080/red" || true
-fi
-
+echo "========== FINAL DEPLOYMENT STATUS =========="
+kubectl get deployments,services -n dev
+kubectl get deployments,services -n prod
 echo
-echo "${GREEN}Script finished. Verify Tasks 4, 5 and 6 with Check my progress.${RESET}"
+echo "Script finished. Check endpoint status after the load balancers receive external IPs:"
+kubectl get services dev-deployment-service -n dev
+kubectl get services prod-deployment-service -n prod
+echo
+echo "Production should now use the v1.0 image, so /red should return 404."
+SCRIPT
+
+bash /tmp/perkverse-gsp330.sh
