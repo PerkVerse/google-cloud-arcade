@@ -2,12 +2,22 @@
 # ============================================================================
 #  Configure Cloud SQL  |  Lab CBL037  |  Full Automation Script (Cloud Shell)
 #
-#  Features
-#    - Project ID is detected automatically
-#    - Region / Zone prompt (auto-detected default, just press Enter)
-#    - Every step retries up to 20 times with built-in self-healing fixes
+#  HOW TO RUN (do NOT paste this into the terminal directly):
+#     1. Upload this file to Cloud Shell  (or create it in Cloud Shell Editor)
+#     2. Run:   bash cloudsql_lab.sh
+#
+#  - Project ID is detected automatically
+#  - Region / Zone prompt (auto-detected default, just press Enter)
+#  - Every step retries up to 20 times and fixes common problems by itself
+#  - Safe to re-run: finished steps are detected and skipped
 # ============================================================================
 set -uo pipefail
+
+# --------------------------- Guard: must be a file ---------------------------
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "bash" ]]; then
+  echo "Please save this as cloudsql_lab.sh and run:  bash cloudsql_lab.sh"
+  return 1 2>/dev/null || exit 1
+fi
 
 # ------------------------------- Styling -----------------------------------
 RED=$'\e[31m'; GRN=$'\e[32m'; YEL=$'\e[33m'; BLU=$'\e[34m'; CYN=$'\e[36m'
@@ -19,12 +29,14 @@ info()   { printf "  ${CYN}ℹ${RST}  %s\n" "$*"; }
 ok()     { printf "  ${GRN}✔${RST}  %s\n" "$*"; }
 warn()   { printf "  ${YEL}⚠${RST}  %s\n" "$*"; }
 err()    { printf "  ${RED}✘${RST}  %s\n" "$*"; }
-kv()     { printf "  ${BLD}%-22s${RST} %s\n" "$1" "$2"; }
+kv()     { printf "  ${BLD}%-24s${RST} %s\n" "$1" "$2"; }
+
+trap 'echo; err "Stopped by user."; exit 130' INT
 
 MAX_TRY=20
 CUR_TRY=1
 
-# retry "<description>" <command...>  ->  runs the command up to MAX_TRY times
+# retry "<description>" <command...>  -> runs the command up to MAX_TRY times
 retry() {
   local desc="$1"; shift
   local i=1 wait
@@ -35,14 +47,21 @@ retry() {
     wait=$(( i * 5 )); (( wait > 30 )) && wait=30
     warn "Attempt ${i} failed. Retrying in ${wait}s..."
     sleep "$wait"
-    ((i++))
+    i=$(( i + 1 ))
   done
   err "${desc} failed after ${MAX_TRY} attempts"
+  warn "You can simply run the script again - it will continue from where it stopped."
   return 1
 }
 
+# ask <VAR> "<prompt>" "<default>"  -> always reads from the keyboard
+ask() {
+  local __var="$1" __prompt="$2" __def="$3" __ans=""
+  read -rp "  ▸ ${__prompt} [${__def}]: " __ans < /dev/tty
+  printf -v "$__var" '%s' "${__ans:-$__def}"
+}
+
 # ------------------------------- Banner ------------------------------------
-clear
 printf "${BLD}${CYN}"
 cat <<'BANNER'
 
@@ -55,6 +74,11 @@ cat <<'BANNER'
 
 BANNER
 printf "${RST}"
+
+# ------------------------ Pre-flight checks --------------------------------
+for tool in gcloud jq curl; do
+  command -v "$tool" >/dev/null 2>&1 || { err "'$tool' is not installed. Please run this in Google Cloud Shell."; exit 1; }
+done
 
 # ------------------------- Step 1: Project ID ------------------------------
 header "STEP 1 of 7  ·  Detecting Project ID"
@@ -71,21 +95,18 @@ ok "Project ID detected: ${BLD}${PROJECT_ID}${RST}"
 # ------------------------ Step 2: Region & Zone ----------------------------
 header "STEP 2 of 7  ·  Region, Zone & Password"
 DEF_ZONE="$(gcloud compute instances list --filter='name=wordpress-proxy' --format='value(zone.basename())' 2>/dev/null | head -n1)"
-DEF_ZONE="${DEF_ZONE:-us-central1-a}"
+DEF_ZONE="${DEF_ZONE:-us-east1-c}"
 DEF_REGION="${DEF_ZONE%-*}"
 info "Detected from the lab VMs: region ${BLD}${DEF_REGION}${RST}, zone ${BLD}${DEF_ZONE}${RST}"
-info "Enter the Lab Region / Lab Zone from the lab panel, or press Enter to accept the default."
+info "Type your Lab Region / Zone, or press Enter to accept the detected value."
 echo
-read -rp "  ▸ Region [${DEF_REGION}]: " REGION
-REGION="${REGION:-$DEF_REGION}"
-read -rp "  ▸ Zone   [${DEF_ZONE}]: " ZONE
-ZONE="${ZONE:-$DEF_ZONE}"
+ask REGION "Region" "$DEF_REGION"
+ask ZONE   "Zone  " "$DEF_ZONE"
 if [[ "$ZONE" != "$REGION"-* ]]; then
   warn "Zone '${ZONE}' does not belong to region '${REGION}'. Adjusting region to match the zone."
   REGION="${ZONE%-*}"
 fi
-read -rp "  ▸ Cloud SQL root password (letters/numbers only) [LabPass12345]: " ROOT_PASSWORD
-ROOT_PASSWORD="${ROOT_PASSWORD:-LabPass12345}"
+ask ROOT_PASSWORD "Cloud SQL root password (letters/numbers only)" "LabPass12345"
 if [[ ! "$ROOT_PASSWORD" =~ ^[A-Za-z0-9]+$ ]]; then
   warn "Password contains special characters. Falling back to the default: LabPass12345"
   ROOT_PASSWORD="LabPass12345"
@@ -120,7 +141,7 @@ retry "Enable Service Networking, SQL Admin and Compute APIs" enable_apis || exi
 header "STEP 4 of 7  ·  Task 2 · Create the Cloud SQL instance"
 
 setup_psa() {
-  # Private Services Access: allocated IP range + VPC peering (idempotent)
+  # Private Services Access = allocated IP range + VPC peering (idempotent)
   if ! gcloud compute addresses describe "$PSA_RANGE" --global >/dev/null 2>&1; then
     gcloud compute addresses create "$PSA_RANGE" --global --purpose=VPC_PEERING \
       --prefix-length=16 --network=default --description="Private services access" --quiet || return 1
@@ -142,7 +163,10 @@ create_sql() {
       ok "Instance already exists and is RUNNABLE"; return 0 ;;
     PENDING_CREATE|MAINTENANCE|PENDING_UPDATE)
       info "Instance is still being created (${state}). Waiting..."
-      for _ in $(seq 1 60); do sleep 15; state="$(sql_state)"; [[ "$state" == "RUNNABLE" ]] && return 0; done
+      for _ in $(seq 1 60); do
+        sleep 15; state="$(sql_state)"
+        [[ "$state" == "RUNNABLE" ]] && return 0
+      done
       return 1 ;;
     FAILED)
       warn "Instance is in FAILED state. Deleting it and recreating..."
@@ -170,7 +194,7 @@ create_sql() {
   [[ "$state" == "RUNNABLE" ]] && return 0
   return $rc
 }
-retry "Create Cloud SQL instance '${DB_INSTANCE}' (this takes a few minutes)" create_sql || exit 1
+retry "Create Cloud SQL instance '${DB_INSTANCE}' (takes ~10 minutes)" create_sql || exit 1
 
 patch_ssl() {
   gcloud sql instances patch "$DB_INSTANCE" --ssl-mode=ALLOW_UNENCRYPTED_AND_ENCRYPTED --quiet
@@ -201,9 +225,12 @@ retry "Create database 'wordpress'" create_db || exit 1
 
 # Self-heal: make sure SSH (direct + IAP) is allowed
 gcloud compute firewall-rules create lab-allow-ssh --network=default --direction=INGRESS \
-  --allow=tcp:22 --source-ranges=0.0.0.0/0,35.235.240.0/20 --quiet >/dev/null 2>&1 || true
+  --allow=tcp:22 --source-ranges=0.0.0.0/0 --quiet >/dev/null 2>&1 || true
+gcloud compute firewall-rules create lab-allow-iap-ssh --network=default --direction=INGRESS \
+  --allow=tcp:22 --source-ranges=35.235.240.0/20 --quiet >/dev/null 2>&1 || true
 
-# run_remote <vm> <script> [KEY=VALUE ...]  -> runs a script on a VM over SSH
+# run_remote <vm> <script> [KEY=VALUE ...]
+#   Copies the script to the VM, then runs it there with the given variables.
 run_remote() {
   local vm="$1" script="$2"; shift 2
   local envs="" pair k v
@@ -211,7 +238,8 @@ run_remote() {
   local iap=()
   (( CUR_TRY % 2 == 0 )) && iap=(--tunnel-through-iap)   # alternate to IAP on even attempts
   printf '%s\n' "$script" | gcloud compute ssh "$vm" --zone="$ZONE" --quiet \
-    --strict-host-key-checking=no "${iap[@]}" --command="${envs}bash -s"
+    --strict-host-key-checking=no "${iap[@]}" \
+    --command="cat > /tmp/lab_step.sh && ${envs}bash /tmp/lab_step.sh < /dev/null"
 }
 
 REMOTE_PROXY=$(cat <<'EOS'
@@ -220,7 +248,7 @@ if [ ! -x ./cloud_sql_proxy ]; then
   wget -q https://dl.google.com/cloudsql/cloud_sql_proxy.linux.amd64 -O cloud_sql_proxy || exit 1
   chmod +x cloud_sql_proxy
 fi
-pkill -f cloud_sql_proxy >/dev/null 2>&1 || true
+pkill -x cloud_sql_proxy >/dev/null 2>&1 || true
 sleep 1
 setsid nohup ./cloud_sql_proxy -instances="$SQL_CONNECTION=tcp:3306" > proxy.log 2>&1 < /dev/null &
 for i in $(seq 1 20); do
@@ -247,10 +275,10 @@ CFG="$WP_DIR/wp-config.php"
 
 patch_cfg() {
   sudo sed -i -E \
-   -e "s|define\( *'DB_NAME'.*|define( 'DB_NAME', 'wordpress' );|" \
-   -e "s|define\( *'DB_USER'.*|define( 'DB_USER', 'root' );|" \
-   -e "s|define\( *'DB_PASSWORD'.*|define( 'DB_PASSWORD', '$DB_PASS' );|" \
-   -e "s|define\( *'DB_HOST'.*|define( 'DB_HOST', '$DB_HOST' );|" "$CFG"
+   -e "s#define\( *['\"]DB_NAME['\"].*#define( 'DB_NAME', 'wordpress' );#" \
+   -e "s#define\( *['\"]DB_USER['\"].*#define( 'DB_USER', 'root' );#" \
+   -e "s#define\( *['\"]DB_PASSWORD['\"].*#define( 'DB_PASSWORD', '$DB_PASS' );#" \
+   -e "s#define\( *['\"]DB_HOST['\"].*#define( 'DB_HOST', '$DB_HOST' );#" "$CFG"
 }
 
 if sudo test -f "$CFG"; then
