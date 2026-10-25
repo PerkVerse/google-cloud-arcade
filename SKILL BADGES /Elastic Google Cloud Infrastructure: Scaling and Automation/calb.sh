@@ -131,8 +131,8 @@ task1_firewall() {
     --network=default --direction=INGRESS --action=allow --rules=tcp:80 \
     --source-ranges=130.211.0.0/22,35.191.0.0/16 \
     --target-tags=allow-health-checks
-  retry "Create health check 'http-health-check'" \
-    gcloud compute health-checks create http http-health-check --port=80
+  retry "Create TCP health check 'http-health-check' (port 80)" \
+    gcloud compute health-checks create tcp http-health-check --port=80
 }
 
 task2_nat() {
