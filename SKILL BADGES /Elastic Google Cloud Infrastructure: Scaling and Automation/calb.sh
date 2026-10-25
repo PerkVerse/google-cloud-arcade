@@ -219,7 +219,7 @@ step "Task 5 · Application Load Balancer (HTTP)"
 retry "Create backend service 'http-backend' (logging 100%)" \
   gcloud compute backend-services create http-backend \
   --protocol=HTTP --port-name=http --health-checks=http-health-check \
-  --global --enable-logging --logging-sample-rate=1
+  --global --load-balancing-scheme=EXTERNAL_MANAGED --enable-logging --logging-sample-rate=1
 
 retry "Add backend '$MIG1' (Rate, 50 RPS)" \
   gcloud compute backend-services add-backend http-backend --global \
@@ -238,10 +238,10 @@ retry "Create target HTTP proxy" \
 
 prun f4 retry "Create IPv4 frontend (port 80)" \
   gcloud compute forwarding-rules create http-lb-forwarding-rule \
-  --global --target-http-proxy=http-lb-target-proxy --ports=80 --ip-version=IPV4
+  --global --target-http-proxy=http-lb-target-proxy --ports=80 --ip-version=IPV4 --load-balancing-scheme=EXTERNAL_MANAGED
 prun f6 retry "Create IPv6 frontend (port 80)" \
   gcloud compute forwarding-rules create http-lb-forwarding-rule-2 \
-  --global --target-http-proxy=http-lb-target-proxy --ports=80 --ip-version=IPV6
+  --global --target-http-proxy=http-lb-target-proxy --ports=80 --ip-version=IPV6 --load-balancing-scheme=EXTERNAL_MANAGED
 pwait
 
 LB_IP=$(gcloud compute forwarding-rules describe http-lb-forwarding-rule --global --format="value(IPAddress)")
