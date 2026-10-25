@@ -176,23 +176,31 @@ create_sql() {
   # Self-heal: verify Private Services Access on every attempt
   setup_psa || { warn "Private Services Access not ready yet"; return 1; }
 
-  gcloud sql instances create "$DB_INSTANCE" \
+  # NOTE: gcloud does not allow --region together with a zone flag.
+  # Giving only the zone is enough (the region is taken from the zone).
+  local zone_flag="--zone"
+  gcloud sql instances create --help 2>/dev/null | grep -q -- '--zone' || zone_flag="--gce-zone"
+
+  info "Creating the instance... please wait (about 10 minutes)"
+  local out rc
+  out="$(gcloud sql instances create "$DB_INSTANCE" \
     --database-version=MYSQL_8_0 \
     --edition=ENTERPRISE \
     --tier=db-n1-standard-1 \
-    --region="$REGION" \
-    --gce-zone="$ZONE" \
+    "${zone_flag}=${ZONE}" \
     --availability-type=zonal \
     --storage-type=SSD \
     --storage-size=10GB \
     --storage-auto-increase \
     --network=default \
     --root-password="$ROOT_PASSWORD" \
-    --quiet
-  local rc=$?
+    --quiet 2>&1)"
+  rc=$?
   state="$(sql_state)"
   [[ "$state" == "RUNNABLE" ]] && return 0
-  return $rc
+  # Show only the useful error lines (not the long usage text)
+  printf '%s\n' "$out" | grep -E '^(ERROR|WARNING)' | head -n 5 | sed 's/^/      /'
+  return $(( rc == 0 ? 1 : rc ))
 }
 retry "Create Cloud SQL instance '${DB_INSTANCE}' (takes ~10 minutes)" create_sql || exit 1
 
