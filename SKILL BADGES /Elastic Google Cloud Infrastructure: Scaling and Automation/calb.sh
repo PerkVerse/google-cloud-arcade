@@ -34,7 +34,7 @@ run() {
       ok "${desc}"
       return 0
     fi
-    if grep -qiE "already exists|alreadyExists" <<<"$out"; then
+    if grep -qiE "already exists|alreadyExists|duplicate nat name|duplicate|already in use|is already being used" <<<"$out"; then
       ok "${desc} ${D}(already exists - skipped)${R}"
       return 0
     fi
