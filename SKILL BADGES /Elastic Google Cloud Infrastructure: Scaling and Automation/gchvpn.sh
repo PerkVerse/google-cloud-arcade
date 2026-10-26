@@ -5,8 +5,8 @@
 # =====================================================================
 
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-MAX_TRY=15      # kitni baar retry karna hai
-DELAY=8         # retry ke beech wait (seconds)
+MAX_TRY=15      # number of retries per command
+DELAY=8         # wait between retries (seconds)
 
 # ---------- Colors ----------
 RST=$'\e[0m'; BOLD=$'\e[1m'; RED=$'\e[1;31m'; GRN=$'\e[1;32m'
@@ -27,19 +27,19 @@ bad()  { echo "  ${RED}✘${RST} $1"; }
 auto_fix() {
   local out="$1"
   if grep -qiE "SERVICE_DISABLED|has not been used|API .* not enabled|accessNotConfigured" <<<"$out"; then
-    warn "Compute API enable kar raha hu (auto-fix)..."
+    warn "Enabling Compute API (auto-fix)..."
     gcloud services enable compute.googleapis.com --quiet >/dev/null 2>&1
     sleep 10
   elif grep -qiE "resourceNotReady|not ready|being used by|RESOURCE_IN_USE|operation .* in progress|is not ready" <<<"$out"; then
-    warn "Resource busy/not ready - thoda wait karke retry..."
+    warn "Resource busy/not ready - waiting, then retrying..."
     sleep 10
   elif grep -qiE "was not found|Could not fetch resource|notFound" <<<"$out"; then
-    warn "Dependent resource abhi ban raha hai - wait kar raha hu..."
+    warn "Dependent resource is still being created - waiting..."
     sleep 8
   elif grep -qiE "ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources" <<<"$out"; then
-    warn "Zone me capacity nahi hai - retry (zone change karna pade to script dobara chalao)."
+    warn "Zone has no capacity - retrying (if it keeps failing, re-run the script with a different zone)."
   elif grep -qiE "quota" <<<"$out"; then
-    warn "Quota issue - auto-fix possible nahi, retry kar raha hu."
+    warn "Quota issue - cannot be auto-fixed, retrying."
   fi
 }
 
@@ -54,20 +54,20 @@ run() {
       good "Done ${DIM}($((SECONDS-t0))s)${RST}"; return 0
     fi
     if grep -qiE "$OK_PAT" <<<"$out"; then
-      good "Already exists / done - skipping ${DIM}($((SECONDS-t0))s)${RST}"; return 0
+      good "Already exists - skipping ${DIM}($((SECONDS-t0))s)${RST}"; return 0
     fi
     err=$(grep -iE "error" <<<"$out" | head -1); [[ -z "$err" ]] && err=$(tail -1 <<<"$out")
-    warn "Attempt ${try}/${MAX_TRY} fail: ${err:0:150}"
+    warn "Attempt ${try}/${MAX_TRY} failed: ${err:0:150}"
     auto_fix "$out"
     try=$((try+1)); sleep $DELAY
   done
-  bad "${MAX_TRY} attempts ke baad bhi fail: ${desc}"
+  bad "Failed after ${MAX_TRY} attempts: ${desc}"
   echo "${DIM}--- last error ---${RST}"; tail -8 <<<"$out"
-  echo "${YLW}Script dobara chalane se wahi se continue hoga (safe).${RST}"
+  echo "${YLW}Re-running the script will continue from here (safe).${RST}"
   exit 1
 }
 
-# run + output dikhao (verification ke liye)
+# run + show output (for verification)
 show() {
   local desc="$1"; shift
   local try=1 out rc
@@ -75,10 +75,10 @@ show() {
   while (( try <= MAX_TRY )); do
     out=$("$@" 2>&1); rc=$?
     if (( rc == 0 )); then sed 's/^/      /' <<<"$out"; good "Verified"; return 0; fi
-    warn "Attempt ${try}/${MAX_TRY} fail"; auto_fix "$out"
+    warn "Attempt ${try}/${MAX_TRY} failed"; auto_fix "$out"
     try=$((try+1)); sleep $DELAY
   done
-  bad "Fail: $desc"; tail -5 <<<"$out"; return 1
+  bad "Failed: $desc"; tail -5 <<<"$out"; return 1
 }
 
 # ---------- Tunnel wait ----------
@@ -90,14 +90,14 @@ wait_tunnel() {
     if [[ "$st" == "ESTABLISHED" ]]; then good "${name} is ESTABLISHED"; return 0; fi
     echo "      ${DIM}[$i/40] status: ${st:-pending}${RST}"; sleep 10
   done
-  warn "${name} abhi tak ESTABLISHED nahi hua - aage badh raha hu."
+  warn "${name} is not ESTABLISHED yet - continuing anyway."
   return 1
 }
 
 # ---------- Ping via SSH ----------
 ssh_ping() {
   local target="$1" try=1 out rc
-  echo "  ${CYN}▶${RST} ${BOLD}on-prem-instance1 se ping ${target}${RST}"
+  echo "  ${CYN}▶${RST} ${BOLD}Ping ${target} from on-prem-instance1${RST}"
   while (( try <= MAX_TRY )); do
     out=$(gcloud compute ssh on-prem-instance1 --zone "$ZONE_ONPREM" --quiet \
           --strict-host-key-checking=no --command "ping -c 4 ${target}" 2>&1); rc=$?
@@ -105,10 +105,10 @@ ssh_ping() {
       grep -E "bytes from|packet loss|rtt" <<<"$out" | sed 's/^/      /'
       good "Ping successful: ${target}"; return 0
     fi
-    warn "Attempt ${try}/${MAX_TRY}: ping/ssh abhi ready nahi (BGP/route converge ho raha hai)..."
+    warn "Attempt ${try}/${MAX_TRY}: ssh/ping not ready yet (BGP/routes still converging)..."
     try=$((try+1)); sleep 12
   done
-  bad "Ping fail: ${target}"; tail -6 <<<"$out"; return 1
+  bad "Ping failed: ${target}"; tail -6 <<<"$out"; return 1
 }
 
 # ---------- Input helpers ----------
@@ -144,25 +144,96 @@ PROJECT_ID="${DEVSHELL_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null
 if [[ -z "$PROJECT_ID" || "$PROJECT_ID" == "(unset)" ]]; then
   PROJECT_ID=$(gcloud projects list --format="value(projectId)" --limit=1 2>/dev/null)
 fi
-if [[ -z "$PROJECT_ID" ]]; then bad "Project ID detect nahi hua. Lab ke credentials se login ho?"; exit 1; fi
+if [[ -z "$PROJECT_ID" ]]; then bad "Could not detect Project ID. Are you logged in with the lab credentials?"; exit 1; fi
 gcloud config set project "$PROJECT_ID" --quiet >/dev/null 2>&1
 good "Project ID detected: ${BOLD}${PROJECT_ID}${RST}"
 
 run "Enabling Compute Engine API" gcloud services enable compute.googleapis.com --quiet
 
-DEF_REGION=$(gcloud compute project-info describe --format="value(commonInstanceMetadata.items[google-compute-default-region])" 2>/dev/null)
-DEF_ZONE=$(gcloud compute project-info describe --format="value(commonInstanceMetadata.items[google-compute-default-zone])" 2>/dev/null)
+# ---------- Auto-detect Region / Zones ----------
+AUTO_MODE=0; [[ "$1" == "--auto" ]] && AUTO_MODE=1
+meta() { gcloud compute project-info describe --format="value(commonInstanceMetadata.items[$1])" 2>/dev/null; }
+clean_unset() { [[ "$1" == "(unset)" ]] && echo "" || echo "$1"; }
 
-echo; info "Lab ke ${BOLD}Lab setup panel${RST} se Region/Zone dekh ke daalo:"; echo
-while true; do ask REGION1 "REGION 1 (e.g. us-central1)" "$DEF_REGION"; valid_region "$REGION1" && break || bad "Invalid region: $REGION1"; done
-while true; do ask ZONE1 "ZONE 1 (zone in $REGION1)" "${DEF_ZONE:-${REGION1}-a}"; valid_zone "$REGION1" "$ZONE1" && break || bad "Zone $ZONE1, $REGION1 ka nahi hai ya invalid"; done
-while true; do ask REGION2 "REGION 2 (e.g. us-west1)" ""; valid_region "$REGION2" && break || bad "Invalid region: $REGION2"; done
-DEF_Z2=$(gcloud compute zones list --filter="name~^${REGION2}-" --format="value(name)" 2>/dev/null | head -1)
-while true; do ask ZONE2 "ZONE 2 (zone in $REGION2)" "$DEF_Z2"; valid_zone "$REGION2" "$ZONE2" && break || bad "Zone $ZONE2, $REGION2 ka nahi hai ya invalid"; done
-DEF_ZO=$(gcloud compute zones list --filter="name~^${REGION1}-" --format="value(name)" 2>/dev/null | grep -v "^${ZONE1}$" | head -1)
-while true; do ask ZONE_ONPREM "ON-PREM zone (REGION 1 me, ZONE 1 se alag)" "$DEF_ZO"
-  if [[ "$ZONE_ONPREM" == "$ZONE1" ]]; then bad "ZONE 1 se alag zone chahiye"; continue; fi
-  valid_zone "$REGION1" "$ZONE_ONPREM" && break || bad "Invalid zone"; done
+info "Auto-detecting Region/Zones..."
+E2_ZONES=$(gcloud compute machine-types list --filter="name=e2-medium" --format="value(zone)" 2>/dev/null | sort -u)
+
+DEF_REGION=$(meta google-compute-default-region)
+DEF_ZONE=$(meta google-compute-default-zone)
+[[ -z "$DEF_REGION" ]] && DEF_REGION=$(clean_unset "$(gcloud config get-value compute/region 2>/dev/null)")
+[[ -z "$DEF_ZONE"   ]] && DEF_ZONE=$(clean_unset "$(gcloud config get-value compute/zone 2>/dev/null)")
+[[ -z "$DEF_REGION" && -n "$DEF_ZONE" ]] && DEF_REGION="${DEF_ZONE%-*}"
+if [[ -z "$DEF_REGION" ]]; then
+  DEF_REGION=$(gcloud compute regions list --filter="status=UP" --format="value(name)" 2>/dev/null | grep -E '^us-' | head -1)
+fi
+[[ -n "$DEF_ZONE" && "$DEF_ZONE" != "$DEF_REGION"-* ]] && DEF_ZONE=""
+
+# zone chooser: prefer zones with e2-medium, then any zone
+pick_zone() { # region [exclude-zone]
+  local z
+  for z in $(grep "^$1-" <<<"$E2_ZONES"); do [[ "$z" != "$2" ]] && { echo "$z"; return; }; done
+  for z in $(gcloud compute zones list --filter="name~^$1-" --format="value(name)" 2>/dev/null | sort); do
+    [[ "$z" != "$2" ]] && { echo "$z"; return; }
+  done
+}
+# second region chooser: same continent, different region
+pick_region2() {
+  local cont="${REGION1%%-*}" r
+  for r in us-west1 us-east1 us-central1 europe-west1 europe-west4 asia-east1 asia-south1; do
+    [[ "$r" != "$REGION1" && "$r" == "$cont"-* ]] && grep -q "^$r-" <<<"$E2_ZONES" && { echo "$r"; return; }
+  done
+  for r in $(gcloud compute regions list --filter="status=UP" --format="value(name)" 2>/dev/null | sort); do
+    [[ "$r" != "$REGION1" && "$r" == "$cont"-* ]] && grep -q "^$r-" <<<"$E2_ZONES" && { echo "$r"; return; }
+  done
+  for r in $(gcloud compute regions list --filter="status=UP" --format="value(name)" 2>/dev/null | sort); do
+    [[ "$r" != "$REGION1" ]] && grep -q "^$r-" <<<"$E2_ZONES" && { echo "$r"; return; }
+  done
+}
+
+REGION1="$DEF_REGION"
+ZONE1="${DEF_ZONE:-$( [[ -n "$REGION1" ]] && pick_zone "$REGION1" )}"
+DEF_R2=""; DEF_Z2=""; DEF_ZO=""
+if [[ -n "$REGION1" ]]; then
+  DEF_R2=$(pick_region2)
+  [[ -n "$DEF_R2" ]] && DEF_Z2=$(pick_zone "$DEF_R2")
+  DEF_ZO=$(pick_zone "$REGION1" "$ZONE1")
+fi
+REGION2="$DEF_R2"; ZONE2="$DEF_Z2"; ZONE_ONPREM="$DEF_ZO"
+
+DETECT_OK=0
+if [[ -n "$REGION1" && -n "$ZONE1" && -n "$REGION2" && -n "$ZONE2" && -n "$ZONE_ONPREM" ]] \
+   && valid_region "$REGION1" && valid_zone "$REGION1" "$ZONE1" \
+   && valid_region "$REGION2" && valid_zone "$REGION2" "$ZONE2" \
+   && valid_zone "$REGION1" "$ZONE_ONPREM"; then DETECT_OK=1; fi
+
+USE_MANUAL=0
+if (( DETECT_OK )); then
+  echo
+  good "Auto-detected:  Region1=${BOLD}$REGION1${RST}  Zone1=${BOLD}$ZONE1${RST}  Region2=${BOLD}$REGION2${RST}  Zone2=${BOLD}$ZONE2${RST}  On-prem zone=${BOLD}$ZONE_ONPREM${RST}"
+  warn "Region 1/Zone 1 come from the project settings. Region 2 is only a suggestion - compare it with the Lab setup panel."
+  if (( AUTO_MODE == 0 )); then
+    read -r -p "  ${YLW}?${RST} Use these values? [Y/n]: " ans
+    [[ "$ans" =~ ^[Nn]$ ]] && USE_MANUAL=1
+  fi
+else
+  warn "Auto-detect incomplete - please enter values manually."
+  USE_MANUAL=1
+fi
+
+if (( USE_MANUAL )); then
+  echo; info "Enter Region/Zone from the ${BOLD}Lab setup panel${RST} (Enter = detected default):"; echo
+  while true; do ask REGION1 "REGION 1" "$REGION1"; valid_region "$REGION1" && break || bad "Invalid region: $REGION1"; done
+  [[ "$ZONE1" != "$REGION1"-* ]] && ZONE1=$(pick_zone "$REGION1")
+  while true; do ask ZONE1 "ZONE 1 (in $REGION1)" "$ZONE1"; valid_zone "$REGION1" "$ZONE1" && break || bad "Zone $ZONE1 does not belong to $REGION1 or is invalid"; done
+  [[ -z "$REGION2" || "$REGION2" == "$REGION1" ]] && REGION2=$(pick_region2)
+  while true; do ask REGION2 "REGION 2" "$REGION2"; valid_region "$REGION2" && break || bad "Invalid region: $REGION2"; done
+  [[ "$ZONE2" != "$REGION2"-* ]] && ZONE2=$(pick_zone "$REGION2")
+  while true; do ask ZONE2 "ZONE 2 (in $REGION2)" "$ZONE2"; valid_zone "$REGION2" "$ZONE2" && break || bad "Zone $ZONE2 does not belong to $REGION2 or is invalid"; done
+  ZONE_ONPREM=$(pick_zone "$REGION1" "$ZONE1")
+  while true; do ask ZONE_ONPREM "ON-PREM zone (in $REGION1, different from ZONE 1)" "$ZONE_ONPREM"
+    if [[ "$ZONE_ONPREM" == "$ZONE1" ]]; then bad "Must be different from ZONE 1"; continue; fi
+    valid_zone "$REGION1" "$ZONE_ONPREM" && break || bad "Invalid zone"; done
+fi
 
 SECRET=$(openssl rand -hex 16 2>/dev/null || echo "LabSecret${RANDOM}${RANDOM}")
 
@@ -176,7 +247,7 @@ printf "  │ %-14s : %-29s │\n" "Zone 2"       "$ZONE2"
 printf "  │ %-14s : %-29s │\n" "On-prem zone" "$ZONE_ONPREM"
 printf "  │ %-14s : %-29s │\n" "Shared secret" "(auto-generated)"
 echo "  ${BOLD}└───────────────────────────────────────────────┘${RST}"
-read -r -p "  ${YLW}Enter dabao start karne ke liye (Ctrl+C = cancel)...${RST}" _
+(( AUTO_MODE )) || read -r -p "  ${YLW}Press Enter to start (Ctrl+C to cancel)...${RST}" _
 
 # =====================================================================
 hdr "TASK 1: Global VPC environment (vpc-demo)"
@@ -233,7 +304,7 @@ done
 
 ssh_ping 10.1.1.2
 
-echo; info "${BOLD}Global routing mode ON kar raha hu (vpc-demo)${RST}"
+echo; info "${BOLD}Enabling global routing mode on vpc-demo${RST}"
 run "Update vpc-demo BGP routing mode -> GLOBAL" gcloud compute networks update vpc-demo --bgp-routing-mode GLOBAL
 show "Verify routing mode" gcloud compute networks describe vpc-demo --format="yaml(name,routingConfig)"
 sleep 15
@@ -248,14 +319,14 @@ good "Pings still working via second tunnel -> HA VPN verified!"
 
 # =====================================================================
 hdr "ALL TASKS COMPLETE"
-echo "  ${GRN}${BOLD}🎉 Lab ke saare tasks complete ho gaye!${RST}"
+echo "  ${GRN}${BOLD}🎉 All lab tasks are complete!${RST}"
 echo "  ${DIM}Total time: $((SECONDS-START_ALL))s${RST}"
 echo
-echo "  ${YLW}Ab Lab page par 'Check my progress' dabao.${RST}"
-echo "  ${DIM}Cleanup (Task 8) optional hai - progress check ke BAAD hi karna.${RST}"
+echo "  ${YLW}Now click 'Check my progress' on the lab page.${RST}"
+echo "  ${DIM}Cleanup (Task 8) is optional - only do it AFTER the progress check.${RST}"
 echo
-read -r -p "  ${YLW}Cleanup abhi karna hai? (y/N): ${RST}" DO_CLEAN
-[[ "$DO_CLEAN" =~ ^[Yy]$ ]] || { echo "  ${GRN}Done. Cleanup skip kiya.${RST}"; exit 0; }
+DO_CLEAN=n; (( AUTO_MODE )) || read -r -p "  ${YLW}Run cleanup now? (y/N): ${RST}" DO_CLEAN
+[[ "$DO_CLEAN" =~ ^[Yy]$ ]] || { echo "  ${GRN}Done. Cleanup skipped.${RST}"; exit 0; }
 
 hdr "TASK 8: Cleanup"
 GONE="not found|was not found|does not exist|notFound"
