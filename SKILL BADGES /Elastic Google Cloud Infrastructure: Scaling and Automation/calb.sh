@@ -8,7 +8,6 @@
 #  Optional overrides:  REGION1=us-east1 REGION2=europe-west1 bash alb_autoscaling_lab.sh
 # =====================================================================
 
-set -o pipefail
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 
 MAX_RETRY="${MAX_RETRY:-15}"
@@ -39,8 +38,16 @@ run() {
       ok "${desc} ${D}(already exists - skipped)${R}"
       return 0
     fi
+    local errline
+    errline=$(grep -iE "ERROR|error:|unrecognized|invalid" <<<"$out" | head -n 1 | cut -c1-200)
+    [[ -z "$errline" ]] && errline=$(tail -n 1 <<<"$out" | cut -c1-200)
+    if grep -qiE "unrecognized arguments|Invalid choice|unknown flag|Invalid value for \\[--|required: |expected one argument" <<<"$out"; then
+      bad "${desc} - command syntax error (retry se fix nahi hoga)"
+      echo "      ${errline}"
+      exit 1
+    fi
     warn "Attempt ${n}/${MAX_RETRY} failed - retrying in ${RETRY_DELAY}s"
-    echo "${D}      $(tail -n 1 <<<"$out" | cut -c1-160)${R}"
+    echo "${D}      ${errline}${R}"
     sleep "$RETRY_DELAY"
     ((n++))
   done
@@ -151,14 +158,15 @@ EOS
     run "Creating VM webserver (no external IP, keep boot disk)" \
       gcloud compute instances create webserver --zone="$ZONE1" \
         --tags=allow-health-checks --no-address --network=default \
-        --boot-disk-auto-delete=no --metadata-from-file=startup-script="$STARTUP"
+        --no-boot-disk-auto-delete --metadata-from-file=startup-script="$STARTUP"
   fi
 
   if exists gcloud compute instances describe webserver --zone="$ZONE1"; then
     info "Apache install hone ka wait (max ~8 min)..."
     READY=0
     for i in $(seq 1 48); do
-      if gcloud compute instances get-serial-port-output webserver --zone="$ZONE1" 2>/dev/null | grep -q "APACHE_SETUP_COMPLETE"; then
+      SERIAL=$(gcloud compute instances get-serial-port-output webserver --zone="$ZONE1" 2>/dev/null)
+      if [[ "$SERIAL" == *APACHE_SETUP_COMPLETE* ]]; then
         READY=1; break
       fi
       printf "  ${D}   waiting... %ds${R}\r" $((i*10)); sleep 10
@@ -248,7 +256,8 @@ section "Task 6 : Stress test"
 info "Load balancer ready hone ka wait (max ~15 min)..."
 LB_READY=0
 for i in $(seq 1 90); do
-  if curl -m 2 -s "http://${LB_IP}" 2>/dev/null | grep -qi apache; then LB_READY=1; break; fi
+  PAGE=$(curl -m 2 -s "http://${LB_IP}" 2>/dev/null)
+  if [[ "${PAGE,,}" == *apache* ]]; then LB_READY=1; break; fi
   printf "  ${D}   Waiting for Load Balancer... %ds${R}\r" $((i*10)); sleep 10
 done
 echo
