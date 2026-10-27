@@ -1,7 +1,10 @@
 #!/bin/bash
 # =====================================================================
 #  GSP211 - Create and Configure Multiple VPC Networks (Full Lab)
-#  Run in Google Cloud Shell:   bash gsp211.sh
+#  Run in Google Cloud Shell:   bash gsp211_fixed.sh
+#  - Auto-detects project, asks Region/Zone
+#  - Auto-creates mynetwork + mynet-vm-1/2 if the lab did not provide them
+#  - Retries every step up to 15 times
 # =====================================================================
 
 # ---------- Colors ----------
@@ -39,7 +42,7 @@ run() {
       return 0
     fi
     warn "Attempt ${attempt}/${MAX_RETRIES} failed. Retrying in ${RETRY_DELAY}s..."
-    printf "    ${D}%s${N}\n" "$(tail -n 2 <<<"$out" | cut -c1-160)"
+    printf "    ${D}%s${N}\n" "$(tail -n 3 <<<"$out" | cut -c1-300)"
     sleep "$RETRY_DELAY"
     ((attempt++))
   done
@@ -47,6 +50,27 @@ run() {
   printf "    ${R}%s${N}\n" "$(tail -n 5 <<<"$out")"
   FAILED+=("$desc")
   return 1
+}
+
+# ---------- Wait until a resource is visible ----------
+# usage: wait_for "Description" command arg1 arg2 ...
+wait_for() {
+  local desc="$1"; shift
+  local i
+  printf "  ${C}⏳${N} Waiting for %s\n" "$desc"
+  for ((i=1; i<=MAX_RETRIES; i++)); do
+    if "$@" >/dev/null 2>&1; then ok "Ready"; return 0; fi
+    warn "Not ready yet (${i}/${MAX_RETRIES})..."
+    sleep "$RETRY_DELAY"
+  done
+  err "Timed out waiting for $desc"
+  FAILED+=("wait: $desc")
+  return 1
+}
+
+# ---------- Table helper (pretty format, fallback to plain) ----------
+show() {  # show "<pretty cmd>" "<fallback cmd>"
+  eval "$1" 2>/dev/null || eval "$2"
 }
 
 # ---------- Banner ----------
@@ -63,8 +87,8 @@ fi
 gcloud config set project "$PROJECT_ID" >/dev/null 2>&1
 ok "Project ID : ${PROJECT_ID}"
 
-# ---------- Auto-detect defaults from pre-created VMs ----------
-step "Detecting lab regions/zones from existing VMs"
+# ---------- Auto-detect defaults ----------
+step "Detecting lab regions/zones"
 Z1=$(gcloud compute instances list --filter="name=mynet-vm-1" --format="value(zone.basename())" 2>/dev/null | head -n1)
 Z2=$(gcloud compute instances list --filter="name=mynet-vm-2" --format="value(zone.basename())" 2>/dev/null | head -n1)
 DEF_ZONE="${Z1:-$(gcloud config get-value compute/zone 2>/dev/null)}"
@@ -74,6 +98,7 @@ DEF_R2="${Z2%-*}"
 [[ -n "$DEF_R1" ]] && info "Detected Region 1 : $DEF_R1"
 [[ -n "$DEF_R2" ]] && info "Detected Region 2 : $DEF_R2"
 [[ -n "$DEF_ZONE" ]] && info "Detected Zone     : $DEF_ZONE"
+[[ -z "$Z1" ]] && warn "mynet-vm-1 not found (will be created automatically if needed)"
 
 # ---------- User input ----------
 banner "Enter Lab Values (see 'Lab setup and access' panel)"
@@ -84,18 +109,22 @@ ask() {  # ask "Prompt" "default" -> sets REPLY_VAL
   local p="$1" d="$2" v
   if [[ -n "$d" ]]; then read -r -p "  ${W}${p}${N} [${G}${d}${N}]: " v; v="${v:-$d}"
   else read -r -p "  ${W}${p}${N}: " v; fi
+  v="${v//[[:space:]\\]/}"   # strip spaces and stray backslashes
   REPLY_VAL="$v"
 }
 
 while true; do ask "Region 1 (e.g. us-east1)" "$DEF_R1"; REGION_1="$REPLY_VAL"
   gcloud compute regions describe "$REGION_1" >/dev/null 2>&1 && break || err "Invalid region, try again."; done
 
-while true; do ask "Region 2 (e.g. europe-west1)" "$DEF_R2"; REGION_2="$REPLY_VAL"
+while true; do ask "Region 2 (e.g. asia-east1)" "$DEF_R2"; REGION_2="$REPLY_VAL"
   gcloud compute regions describe "$REGION_2" >/dev/null 2>&1 && break || err "Invalid region, try again."; done
 
-while true; do ask "Zone (inside Region 1, e.g. ${REGION_1}-b)" "$DEF_ZONE"; ZONE="$REPLY_VAL"
+while true; do ask "Zone (inside Region 1, e.g. ${REGION_1}-c)" "$DEF_ZONE"; ZONE="$REPLY_VAL"
   if [[ "$ZONE" == "${REGION_1}-"* ]] && gcloud compute zones describe "$ZONE" >/dev/null 2>&1; then break
   else err "Zone must be valid and belong to ${REGION_1}."; fi; done
+
+# Zone for mynet-vm-2 (only needed if it must be created)
+ZONE2="${Z2:-$(gcloud compute zones list --filter="name~^${REGION_2}-" --format='value(name)' 2>/dev/null | sort | head -n1)}"
 
 gcloud config set compute/region "$REGION_1" >/dev/null 2>&1
 gcloud config set compute/zone "$ZONE" >/dev/null 2>&1
@@ -107,6 +136,54 @@ printf "  ${W}Project  :${N} %s\n  ${W}Region 1 :${N} %s\n  ${W}Region 2 :${N} %
 line
 read -r -p "  Start the lab automation? [Y/n]: " GO
 [[ "$GO" =~ ^[Nn]$ ]] && { err "Cancelled."; exit 1; }
+
+# =====================================================================
+# PRE-CHECK - mynetwork and its VMs (normally pre-created by the lab)
+# =====================================================================
+banner "PRE-CHECK • mynetwork resources"
+
+if gcloud compute networks describe mynetwork >/dev/null 2>&1; then
+  ok "mynetwork already exists"
+else
+  warn "mynetwork is missing - creating it (auto mode, same as the lab setup)"
+  run "Create network mynetwork" \
+    gcloud compute networks create mynetwork --subnet-mode=auto
+  run "Create rule mynetwork-allow-icmp" \
+    gcloud compute firewall-rules create mynetwork-allow-icmp \
+      --network=mynetwork --direction=INGRESS --priority=65534 --action=ALLOW \
+      --rules=icmp --source-ranges=0.0.0.0/0
+  run "Create rule mynetwork-allow-ssh" \
+    gcloud compute firewall-rules create mynetwork-allow-ssh \
+      --network=mynetwork --direction=INGRESS --priority=65534 --action=ALLOW \
+      --rules=tcp:22 --source-ranges=0.0.0.0/0
+  run "Create rule mynetwork-allow-rdp" \
+    gcloud compute firewall-rules create mynetwork-allow-rdp \
+      --network=mynetwork --direction=INGRESS --priority=65534 --action=ALLOW \
+      --rules=tcp:3389 --source-ranges=0.0.0.0/0
+fi
+
+wait_for "mynetwork subnet in $REGION_1" \
+  gcloud compute networks subnets describe mynetwork --region="$REGION_1"
+wait_for "mynetwork subnet in $REGION_2" \
+  gcloud compute networks subnets describe mynetwork --region="$REGION_2"
+
+if [[ -z "$(gcloud compute instances list --filter='name=mynet-vm-1' --format='value(name)' 2>/dev/null)" ]]; then
+  run "Create mynet-vm-1 ($ZONE)" \
+    gcloud compute instances create mynet-vm-1 \
+      --zone="$ZONE" --machine-type=e2-micro \
+      --network=mynetwork --subnet=mynetwork
+else
+  ok "mynet-vm-1 already exists"
+fi
+
+if [[ -z "$(gcloud compute instances list --filter='name=mynet-vm-2' --format='value(name)' 2>/dev/null)" ]]; then
+  run "Create mynet-vm-2 ($ZONE2)" \
+    gcloud compute instances create mynet-vm-2 \
+      --zone="$ZONE2" --machine-type=e2-micro \
+      --network=mynetwork --subnet=mynetwork
+else
+  ok "mynet-vm-2 already exists"
+fi
 
 # =====================================================================
 # TASK 1 - Networks and firewall rules
@@ -141,11 +218,15 @@ run "Create rule privatenet-allow-icmp-ssh-rdp" \
     --rules=icmp,tcp:22,tcp:3389 --source-ranges=0.0.0.0/0
 
 step "Verification"
-gcloud compute networks list
-echo
-gcloud compute networks subnets list --sort-by=NETWORK
-echo
-gcloud compute firewall-rules list --sort-by=NETWORK
+echo "  ${W}Networks${N}"
+show 'gcloud compute networks list --format="table(name,x_gcloud_subnet_mode:label=MODE)"' \
+     'gcloud compute networks list'
+echo; echo "  ${W}Lab subnets${N}"
+show 'gcloud compute networks subnets list --filter="name~managementsubnet|privatesubnet|^mynetwork$ AND (region~'"$REGION_1"'|region~'"$REGION_2"')" --sort-by=NETWORK --format="table(name,region.basename(),network.basename(),ipCidrRange)"' \
+     'gcloud compute networks subnets list --sort-by=NETWORK'
+echo; echo "  ${W}Lab firewall rules${N}"
+show 'gcloud compute firewall-rules list --filter="network~managementnet|privatenet|mynetwork" --sort-by=NETWORK --format="table(name,network.basename(),priority,allowed[].map().firewall_rule().list():label=ALLOW)"' \
+     'gcloud compute firewall-rules list --sort-by=NETWORK'
 
 # =====================================================================
 # TASK 2 - VM instances
@@ -163,12 +244,18 @@ run "Create privatenet-vm-1 ($ZONE)" \
     --network=privatenet --subnet=privatesubnet-1
 
 step "Instances list"
-gcloud compute instances list --sort-by=ZONE
+show 'gcloud compute instances list --sort-by=ZONE --format="table(name,zone.basename(),machineType.basename(),networkInterfaces[0].networkIP:label=INTERNAL_IP,networkInterfaces[0].accessConfigs[0].natIP:label=EXTERNAL_IP,status)"' \
+     'gcloud compute instances list --sort-by=ZONE'
 
 # =====================================================================
 # TASK 4 - Multi-NIC VM
 # =====================================================================
 banner "TASK 4 • VM with multiple network interfaces"
+
+step "Checking all 3 subnets are ready"
+wait_for "privatesubnet-1"    gcloud compute networks subnets describe privatesubnet-1    --region="$REGION_1"
+wait_for "managementsubnet-1" gcloud compute networks subnets describe managementsubnet-1 --region="$REGION_1"
+wait_for "mynetwork subnet"   gcloud compute networks subnets describe mynetwork          --region="$REGION_1"
 
 run "Create vm-appliance (3 NICs, e2-standard-4)" \
   gcloud compute instances create vm-appliance \
@@ -179,7 +266,7 @@ run "Create vm-appliance (3 NICs, e2-standard-4)" \
 
 step "vm-appliance interfaces"
 gcloud compute instances describe vm-appliance --zone="$ZONE" \
-  --format="table(networkInterfaces[].name, networkInterfaces[].network.basename(), networkInterfaces[].networkIP)"
+  --format="table(networkInterfaces[].name:label=NIC, networkInterfaces[].network.basename():label=NETWORK, networkInterfaces[].networkIP:label=INTERNAL_IP)" 2>/dev/null
 
 # =====================================================================
 # Summary
