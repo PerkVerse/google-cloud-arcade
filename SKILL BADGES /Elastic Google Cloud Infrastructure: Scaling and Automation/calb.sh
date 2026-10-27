@@ -1,302 +1,293 @@
 #!/bin/bash
-# =====================================================================
-#  Configure an Application Load Balancer with Autoscaling
-#  Full lab automation for Google Cloud Shell  (fast / parallel version)
-#  Usage:  bash lab.sh
-# =====================================================================
+# ============================================================
+#  Google Cloud Lab: Configure an Application Load Balancer
+#  with Autoscaling  (Lab ID: OCBL105)
+#  Run this FULL script in Cloud Shell.
+# ============================================================
 
-# ---------- Look & feel ----------
-BOLD=$'\e[1m'; DIM=$'\e[2m'; RESET=$'\e[0m'
-GREEN=$'\e[32m'; RED=$'\e[31m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'; BLUE=$'\e[34m'
-LINE="${DIM}────────────────────────────────────────────────────────────${RESET}"
+set -u
+export DEBIAN_FRONTEND=noninteractive
 
-banner() {
-  echo
-  echo "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════╗${RESET}"
-  printf "${CYAN}${BOLD}║${RESET}  %-56s${CYAN}${BOLD}║${RESET}\n" "$1"
-  [ -n "$2" ] && printf "${CYAN}${BOLD}║${RESET}  ${DIM}%-56s${RESET}${CYAN}${BOLD}║${RESET}\n" "$2"
-  echo "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════╝${RESET}"
-}
-step()  { echo; echo "${BLUE}${BOLD}▶ $1${RESET}"; echo "$LINE"; }
-ok()    { echo "  ${GREEN}✔${RESET} $1"; }
-info()  { echo "  ${CYAN}ℹ${RESET} $1"; }
-warn()  { echo "  ${YELLOW}⚠${RESET} $1"; }
-fail()  { echo "  ${RED}✘${RESET} $1"; }
+# ---------- COLORS ----------
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1;34m'; N='\033[0m'
 
-# ---------- Settings ----------
-PROJECT=$(gcloud config get-value project 2>/dev/null)
-MAX_TRIES=15
-SLEEP=5
-LOGDIR=/tmp/labrun; rm -rf $LOGDIR; mkdir -p $LOGDIR
+step()    { echo -e "\n${B}================ $1 ================${N}"; }
+ok()      { echo -e "${G}[OK] $1${N}"; }
+info()    { echo -e "${Y}[INFO] $1${N}"; }
+fail()    { echo -e "${R}[FAIL] $1${N}"; }
 
-# ---------- Inputs ----------
-banner "Application Load Balancer + Autoscaling Lab" "Fast automated setup for Cloud Shell"
-echo
-echo "${BOLD}Enter the values shown in your lab instructions:${RESET}"
-read -r -p "  ${CYAN}Region${RESET} (e.g. us-west1)  : " R1 </dev/tty
-R1=$(echo "$R1" | tr -d '[:space:]')
-read -r -p "  ${CYAN}Zone${RESET}   (e.g. ${R1:-us-west1}-b) : " Z1 </dev/tty
-Z1=$(echo "$Z1" | tr -d '[:space:]')
-if [ -z "$R1" ] || [ -z "$Z1" ]; then fail "Region and Zone are required."; exit 1; fi
-
-read -r -p "  ${CYAN}Second region${RESET} (region of notus-1-mig, e.g. europe-west4): " R2 </dev/tty
-R2=$(echo "$R2" | tr -d '[:space:]')
-if [ -z "$R2" ]; then fail "Second region is required."; exit 1; fi
-MIG1=us-1-mig
-MIG2=notus-1-mig
-
-Z2=$(gcloud compute zones list --filter="region:($R1) AND status=UP AND name!=$Z1" --format="value(name)" 2>/dev/null | sort | head -1)
-STRESS_ZONE=${Z2:-$Z1}
-
-echo
-echo "$LINE"
-printf "  %-18s %s\n" "Project"          "${BOLD}$PROJECT${RESET}"
-printf "  %-18s %s\n" "Region / Zone"    "${BOLD}$R1 / $Z1${RESET}"
-printf "  %-18s %s\n" "Second region"    "${BOLD}$R2${RESET}"
-printf "  %-18s %s\n" "Instance groups"  "${BOLD}$MIG1, $MIG2${RESET}"
-printf "  %-18s %s\n" "Stress-test zone" "${BOLD}$STRESS_ZONE${RESET}"
-echo "$LINE"
-
-gcloud config set compute/region "$R1" >/dev/null 2>&1
-gcloud config set compute/zone "$Z1" >/dev/null 2>&1
-
-# ---------- Retry helper: retry "description" command... ----------
+# ---------- RETRY FUNCTION (20 attempts) ----------
 retry() {
   local desc="$1"; shift
-  local n=1 out rc err
-  while true; do
-    out=$("$@" 2>&1); rc=$?
-    if [ $rc -eq 0 ]; then ok "$desc"; return 0; fi
-    if echo "$out" | grep -qi "already exists"; then
-      ok "$desc ${DIM}(already exists)${RESET}"; return 0
+  local attempt=1
+  until "$@"; do
+    if [ $attempt -ge 20 ]; then
+      fail "$desc failed after 20 attempts."
+      return 1
     fi
-    err=$(echo "$out" | grep -iE "error|denied|invalid|not found|quota|unrecognized" | tail -1 | cut -c1-150)
-    # Clearly permanent mistakes: stop early instead of wasting time
-    if [ $n -ge 3 ] && echo "$out" | grep -qiE "unrecognized arguments|invalid choice|Invalid value for|PERMISSION_DENIED"; then
-      fail "$desc ${DIM}— permanent error, not retrying${RESET}"
-      echo "    ${DIM}${err:-$out}${RESET}"; return 1
-    fi
-    if [ $n -ge $MAX_TRIES ]; then
-      fail "$desc ${DIM}— gave up after $MAX_TRIES attempts${RESET}"
-      echo "    ${DIM}${err:-$out}${RESET}"; return 1
-    fi
-    warn "$desc ${DIM}— attempt $n/$MAX_TRIES failed, retrying in ${SLEEP}s${RESET}"
-    [ -n "$err" ] && echo "    ${DIM}$err${RESET}"
-    n=$((n+1)); sleep $SLEEP
+    info "$desc failed (attempt $attempt/20). Retrying in 10s..."
+    sleep 10
+    attempt=$((attempt+1))
   done
+  ok "$desc"
 }
 
-# ---------- Parallel helpers ----------
-NAMES=()
-prun() {  # prun name command...   (runs in background, output saved to a log)
-  local name="$1"; shift
-  NAMES+=("$name")
-  ( "$@" ) > "$LOGDIR/$name.log" 2>&1 &
-}
-pwait() {  # waits for all background jobs, shows a live timer, then prints their logs in order
-  local start=$SECONDS
-  while [ -n "$(jobs -rp)" ]; do
-    printf "\r  ${DIM}⏳ running in parallel... %ss${RESET}" $((SECONDS-start))
-    sleep 1
-  done
-  wait
-  printf "\r%60s\r" ""
-  for n in "${NAMES[@]}"; do cat "$LOGDIR/$n.log"; done
-  NAMES=()
-}
+# ---------- AUTO DETECTION ----------
+step "AUTO-DETECTING PROJECT / REGION / ZONE"
 
-step "Preparing project"
-retry "Enable Compute Engine API" gcloud services enable compute.googleapis.com
+PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
+[ -z "$PROJECT_ID" ] && PROJECT_ID=$(gcloud projects list --format='value(projectId)' --limit=1)
+gcloud config set project "$PROJECT_ID" >/dev/null
 
-# =====================================================================
-#  PHASE 1 — Tasks 1, 2, 3 (all run together)
-# =====================================================================
-cat > /tmp/web-startup.sh <<'EOF'
-#!/bin/bash
-export DEBIAN_FRONTEND=noninteractive
-for i in $(seq 1 40); do
-  apt-get update && apt-get install -y apache2 && break
-  sleep 5
+REGION1=$(gcloud compute project-info describe \
+  --format="value(commonInstanceMetadata.items[google-compute-default-region])")
+
+if [ -z "$REGION1" ]; then
+  REGION1=$(gcloud compute regions list --format="value(name)" --limit=1)
+fi
+
+ZONE1=$(gcloud compute project-info describe \
+  --format="value(commonInstanceMetadata.items[google-compute-default-zone])")
+
+if [ -z "$ZONE1" ]; then
+  ZONE1=$(gcloud compute zones list --filter="region:$REGION1" \
+    --format="value(name)" --limit=1)
+fi
+
+# Pick a second region automatically (different from REGION1)
+REGION2=$(gcloud compute regions list --format="value(name)" \
+  | grep -v "^$REGION1$" | head -n1)
+
+ZONE2=$(gcloud compute zones list --filter="region:$REGION2" \
+  --format="value(name)" --limit=1)
+
+echo -e "${G}PROJECT_ID : $PROJECT_ID${N}"
+echo -e "${G}REGION 1   : $REGION1   |  ZONE 1: $ZONE1${N}"
+echo -e "${G}REGION 2   : $REGION2   |  ZONE 2: $ZONE2${N}"
+
+# ============================================================
+# TASK 1 — HEALTH CHECK FIREWALL RULE
+# ============================================================
+step "TASK 1: HEALTH CHECK FIREWALL RULE"
+
+retry "Creating firewall rule fw-allow-health-checks" gcloud compute firewall-rules create fw-allow-health-checks \
+  --network=default \
+  --action=allow \
+  --direction=INGRESS \
+  --source-ranges=130.211.0.0/22,35.191.0.0/16 \
+  --target-tags=allow-health-checks \
+  --rules=tcp:80
+
+# ============================================================
+# TASK 2 — CLOUD ROUTER + CLOUD NAT
+# ============================================================
+step "TASK 2: CLOUD ROUTER + CLOUD NAT"
+
+retry "Creating Cloud Router nat-router-us1" gcloud compute routers create nat-router-us1 \
+  --network=default \
+  --region="$REGION1"
+
+retry "Creating Cloud NAT nat-config" gcloud compute routers nats create nat-config \
+  --router=nat-router-us1 \
+  --region="$REGION1" \
+  --auto-allocate-nat-external-ips \
+  --nat-all-subnet-ip-ranges
+
+info "Waiting for Cloud NAT to become ACTIVE..."
+for i in $(seq 1 20); do
+  STATUS=$(gcloud compute routers nats describe nat-config \
+    --router=nat-router-us1 --region="$REGION1" \
+    --format="value(status)" 2>/dev/null)
+  [ "$STATUS" = "ACTIVE" ] && break
+  sleep 10
 done
+ok "Cloud NAT status: $STATUS"
+
+# ============================================================
+# TASK 3 — CUSTOM WEB SERVER IMAGE
+# ============================================================
+step "TASK 3: CREATING CUSTOM WEB SERVER IMAGE"
+
+retry "Creating webserver VM" gcloud compute instances create webserver \
+  --zone="$ZONE1" \
+  --machine-type=e2-micro \
+  --network-interface=subnet=default,no-address \
+  --tags=allow-health-checks \
+  --boot-disk-auto-delete=no \
+  --metadata=startup-script='#! /bin/bash
+apt-get update
+apt-get install -y apache2
 systemctl enable apache2
-systemctl start apache2
-if dpkg -s apache2 >/dev/null 2>&1 && systemctl is-active --quiet apache2; then
-  echo "WEBSERVER-SETUP-DONE"
-fi
-EOF
+systemctl start apache2'
 
-task1_firewall() {
-  echo "${BOLD}Task 1 · Health check firewall rule${RESET}"
-  retry "Create firewall rule fw-allow-health-checks" \
-    gcloud compute firewall-rules create fw-allow-health-checks \
-    --network=default --direction=INGRESS --action=allow --rules=tcp:80 \
-    --source-ranges=130.211.0.0/22,35.191.0.0/16 \
-    --target-tags=allow-health-checks
-  retry "Create TCP health check 'http-health-check' (port 80)" \
-    gcloud compute health-checks create tcp http-health-check --port=80
-}
+info "Waiting for webserver VM to finish setup..."
+sleep 60
 
-task2_nat() {
-  echo "${BOLD}Task 2 · Cloud Router and Cloud NAT${RESET}"
-  retry "Create Cloud Router nat-router-us1" \
-    gcloud compute routers create nat-router-us1 --network=default --region=$R1
-  retry "Create NAT gateway nat-config" \
-    gcloud compute routers nats create nat-config \
-    --router=nat-router-us1 --region=$R1 \
-    --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges
-}
+retry "Stopping webserver VM" gcloud compute instances stop webserver --zone="$ZONE1"
 
-setup_webserver() {
-  gcloud compute instances delete webserver --zone=$Z1 --quiet >/dev/null 2>&1
-  gcloud compute disks delete webserver --zone=$Z1 --quiet >/dev/null 2>&1
-  retry "Create VM 'webserver' (no external IP, keep boot disk)" \
-    gcloud compute instances create webserver \
-    --zone=$Z1 --machine-type=e2-medium \
-    --image-family=debian-12 --image-project=debian-cloud \
-    --tags=allow-health-checks --no-address --network=default \
-    --no-boot-disk-auto-delete \
-    --metadata-from-file=startup-script=/tmp/web-startup.sh || return 1
-  for i in $(seq 1 120); do      # up to ~10 minutes, checks every 5s
-    if gcloud compute instances get-serial-port-output webserver --zone=$Z1 2>/dev/null | grep -q "WEBSERVER-SETUP-DONE"; then
-      ok "Apache installed and set to start on boot"
-      return 0
-    fi
-    sleep 5
-  done
-  return 1
-}
+retry "Creating custom image mywebserver" gcloud compute images create mywebserver \
+  --source-disk=webserver \
+  --source-disk-zone="$ZONE1"
 
-task3_image() {
-  echo "${BOLD}Task 3 · Custom web server image${RESET}"
-  for attempt in 1 2 3; do
-    [ $attempt -gt 1 ] && warn "Web server setup failed, starting attempt $attempt/3"
-    if setup_webserver; then break; fi
-  done
-  retry "Delete VM 'webserver' (disk is kept)" \
-    gcloud compute instances delete webserver --zone=$Z1 --quiet
-  retry "Create custom image 'mywebserver'" \
-    gcloud compute images create mywebserver \
-    --source-disk=webserver --source-disk-zone=$Z1
-}
+retry "Deleting webserver VM" gcloud compute instances delete webserver \
+  --zone="$ZONE1" --quiet
 
-step "Tasks 1–3 · Firewall, NAT and custom image (running together)"
-prun t1 task1_firewall
-prun t2 task2_nat
-prun t3 task3_image
-pwait
+# ============================================================
+# TASK 4 — INSTANCE TEMPLATE + HEALTH CHECK + MIGs
+# ============================================================
+step "TASK 4: INSTANCE TEMPLATE, HEALTH CHECK, MIGs"
 
-# =====================================================================
-#  PHASE 2 — Task 4
-# =====================================================================
-step "Task 4 · Instance template and managed instance groups"
-retry "Create instance template 'mywebserver-template'" \
-  gcloud compute instance-templates create mywebserver-template \
-  --machine-type=e2-micro --image=mywebserver --image-project=$PROJECT \
-  --tags=allow-health-checks --no-address --network=default
+retry "Creating instance template" gcloud compute instance-templates create mywebserver-template \
+  --machine-type=e2-micro \
+  --image=mywebserver \
+  --network-interface=subnet=default,no-address \
+  --tags=allow-health-checks \
+  --region="$REGION1"
 
-build_mig() {  # build_mig NAME REGION
-  local name=$1 region=$2
-  echo "${BOLD}Instance group '$name' ($region)${RESET}"
-  retry "Create instance group '$name'" \
-    gcloud compute instance-groups managed create $name \
-    --template=mywebserver-template --size=1 --region=$region \
-    --health-check=http-health-check --initial-delay=60
-  retry "Set autoscaling (1–2 instances, 80% target)" \
-    gcloud compute instance-groups managed set-autoscaling $name \
-    --region=$region --min-num-replicas=1 --max-num-replicas=2 \
-    --target-load-balancing-utilization=0.8 --cool-down-period=60
-  retry "Set named port http:80" \
-    gcloud compute instance-groups managed set-named-ports $name \
-    --named-ports=http:80 --region=$region
-}
-prun m1 build_mig $MIG1 $R1
-prun m2 build_mig $MIG2 $R2
-pwait
+retry "Creating TCP health check" gcloud compute health-checks create tcp http-health-check \
+  --port=80 \
+  --check-interval=5s \
+  --timeout=5s \
+  --unhealthy-threshold=2 \
+  --healthy-threshold=2
 
-# =====================================================================
-#  PHASE 3 — Task 5
-# =====================================================================
-step "Task 5 · Application Load Balancer (HTTP)"
-retry "Create backend service 'http-backend' (logging 100%)" \
-  gcloud compute backend-services create http-backend \
-  --protocol=HTTP --port-name=http --health-checks=http-health-check \
-  --global --load-balancing-scheme=EXTERNAL_MANAGED --enable-logging --logging-sample-rate=1
+# ----- REGION 1 MIG -----
+retry "Creating regional MIG us-1-mig" gcloud compute instance-groups managed create us-1-mig \
+  --template=mywebserver-template \
+  --region="$REGION1" \
+  --size=1 \
+  --health-check=http-health-check \
+  --initial-delay=60
 
-retry "Add backend '$MIG1' (Rate, 50 RPS)" \
-  gcloud compute backend-services add-backend http-backend --global \
-  --instance-group=$MIG1 --instance-group-region=$R1 \
-  --balancing-mode=RATE --max-rate-per-instance=50 --capacity-scaler=1.0
+retry "Setting autoscaling for us-1-mig" gcloud compute instance-groups managed set-autoscaling us-1-mig \
+  --region="$REGION1" \
+  --max-num-replicas=2 \
+  --min-num-replicas=1 \
+  --target-load-balancing-utilization=0.8 \
+  --cool-down-period=60
 
-retry "Add backend '$MIG2' (Utilization, 80%)" \
-  gcloud compute backend-services add-backend http-backend --global \
-  --instance-group=$MIG2 --instance-group-region=$R2 \
-  --balancing-mode=UTILIZATION --max-utilization=0.8 --capacity-scaler=1.0
+# ----- REGION 2 MIG -----
+retry "Creating regional MIG notus-1-mig" gcloud compute instance-groups managed create notus-1-mig \
+  --template=mywebserver-template \
+  --region="$REGION2" \
+  --size=1 \
+  --health-check=http-health-check \
+  --initial-delay=60
 
-retry "Create URL map 'http-lb'" \
-  gcloud compute url-maps create http-lb --default-service=http-backend
-retry "Create target HTTP proxy" \
-  gcloud compute target-http-proxies create http-lb-target-proxy --url-map=http-lb
+retry "Setting autoscaling for notus-1-mig" gcloud compute instance-groups managed set-autoscaling notus-1-mig \
+  --region="$REGION2" \
+  --max-num-replicas=2 \
+  --min-num-replicas=1 \
+  --target-load-balancing-utilization=0.8 \
+  --cool-down-period=60
 
-prun f4 retry "Create IPv4 frontend (port 80)" \
-  gcloud compute forwarding-rules create http-lb-forwarding-rule \
-  --global --target-http-proxy=http-lb-target-proxy --ports=80 --ip-version=IPV4 --load-balancing-scheme=EXTERNAL_MANAGED
-prun f6 retry "Create IPv6 frontend (port 80)" \
-  gcloud compute forwarding-rules create http-lb-forwarding-rule-2 \
-  --global --target-http-proxy=http-lb-target-proxy --ports=80 --ip-version=IPV6 --load-balancing-scheme=EXTERNAL_MANAGED
-pwait
+# ============================================================
+# TASK 5 — GLOBAL EXTERNAL APPLICATION LOAD BALANCER
+# ============================================================
+step "TASK 5: CREATING GLOBAL HTTP LOAD BALANCER"
 
-LB_IP=$(gcloud compute forwarding-rules describe http-lb-forwarding-rule --global --format="value(IPAddress)")
-LB_IPV6=$(gcloud compute forwarding-rules describe http-lb-forwarding-rule-2 --global --format="value(IPAddress)")
-ok "Load balancer IPv4: ${BOLD}$LB_IP${RESET}"
-ok "Load balancer IPv6: ${BOLD}$LB_IPV6${RESET}"
+retry "Creating backend service http-backend" gcloud compute backend-services create http-backend \
+  --global \
+  --protocol=HTTP \
+  --health-checks=http-health-check \
+  --enable-logging \
+  --logging-sample-rate=1.0 \
+  --load-balancing-scheme=EXTERNAL_MANAGED
 
-# =====================================================================
-#  PHASE 4 — Task 6 (stress VM waits for the LB by itself)
-# =====================================================================
-step "Task 6 · Stress test"
-cat > /tmp/stress-startup.sh <<'EOF'
-#!/bin/bash
-ulimit -n 65535
-for i in $(seq 1 180); do
-  curl -m2 -s http://LB_IP_PLACEHOLDER/ | grep -q Apache && break
-  sleep 5
+retry "Adding us-1-mig backend (RATE mode)" gcloud compute backend-services add-backend http-backend \
+  --global \
+  --instance-group=us-1-mig \
+  --instance-group-region="$REGION1" \
+  --balancing-mode=RATE \
+  --max-rate=50 \
+  --capacity-scaler=1.0
+
+retry "Adding notus-1-mig backend (UTILIZATION mode)" gcloud compute backend-services add-backend http-backend \
+  --global \
+  --instance-group=notus-1-mig \
+  --instance-group-region="$REGION2" \
+  --balancing-mode=UTILIZATION \
+  --max-utilization=0.8 \
+  --capacity-scaler=1.0
+
+retry "Creating URL map" gcloud compute url-maps create http-lb \
+  --default-service=http-backend
+
+retry "Creating HTTP target proxy" gcloud compute target-http-proxies create http-lb-target-proxy \
+  --url-map=http-lb
+
+retry "Creating IPv4 forwarding rule" gcloud compute forwarding-rules create http-lb-ipv4 \
+  --global \
+  --target-http-proxy=http-lb-target-proxy \
+  --ports=80 \
+  --load-balancing-scheme=EXTERNAL_MANAGED \
+  --ip-version=IPV4
+
+retry "Creating IPv6 forwarding rule" gcloud compute forwarding-rules create http-lb-ipv6 \
+  --global \
+  --target-http-proxy=http-lb-target-proxy \
+  --ports=80 \
+  --load-balancing-scheme=EXTERNAL_MANAGED \
+  --ip-version=IPV6
+
+# ============================================================
+# WAIT FOR LOAD BALANCER TO BECOME HEALTHY
+# ============================================================
+step "WAITING FOR LOAD BALANCER TO BECOME ACTIVE"
+
+LB_IP=$(gcloud compute forwarding-rules describe http-lb-ipv4 \
+  --global --format="value(IPAddress)")
+
+echo -e "${G}LOAD BALANCER IPv4: $LB_IP${N}"
+
+for i in $(seq 1 20); do
+  RESULT=$(curl -m 3 -s "http://$LB_IP" | grep -i apache)
+  [ -n "$RESULT" ] && break
+  info "Load balancer not ready yet... waiting ($i/20)"
+  sleep 15
 done
-nohup bash -c 'ab -n 500000 -c 1000 http://LB_IP_PLACEHOLDER/ ; ab -n 500000 -c 1000 http://LB_IP_PLACEHOLDER/' > /tmp/ab.log 2>&1 &
-EOF
-sed -i "s/LB_IP_PLACEHOLDER/$LB_IP/g" /tmp/stress-startup.sh
 
-prun s1 retry "Create VM 'stress-test' ($STRESS_ZONE) — load starts when the LB is ready" \
-  gcloud compute instances create stress-test \
-  --zone=$STRESS_ZONE --machine-type=e2-micro \
-  --image=mywebserver --image-project=$PROJECT \
-  --metadata-from-file=startup-script=/tmp/stress-startup.sh
+[ -n "$RESULT" ] && ok "Load balancer is serving Apache traffic." \
+  || fail "Load balancer still not responding. Re-run the waiting loop."
 
-info "Checking that the load balancer is serving traffic"
-READY=0
-for i in $(seq 1 60); do
-  if curl -m2 -s http://$LB_IP | grep -q Apache; then READY=1; break; fi
-  printf "\r  ${DIM}⏳ waiting for load balancer... %ss${RESET}" $((i*5))
-  sleep 5
-done
-printf "\r%60s\r" ""
-if [ $READY -eq 1 ]; then ok "Load balancer is serving traffic"; else warn "Load balancer is still warming up — give it a few more minutes"; fi
-pwait
+# ============================================================
+# TASK 6 — STRESS TEST
+# ============================================================
+step "TASK 6: STRESS TESTING LOAD BALANCER"
 
-# =====================================================================
-MINS=$((SECONDS/60)); SECS=$((SECONDS%60))
-FAILS=$(cat $LOGDIR/*.log 2>/dev/null | grep -c "✘")
-if [ "$FAILS" -eq 0 ]; then
-  banner "All done in ${MINS}m ${SECS}s" "Everything has been configured"
-else
-  banner "Finished in ${MINS}m ${SECS}s with $FAILS issue(s)" "Check the ✘ lines above, then re-run: bash lab.sh"
-fi
-echo
-printf "  %-14s %s\n" "IPv4 URL"  "${BOLD}http://$LB_IP${RESET}"
-printf "  %-14s %s\n" "IPv6"      "${BOLD}$LB_IPV6${RESET}"
-echo
-echo "${BOLD}Next steps${RESET}"
-echo "  1. Console → Network services → Load balancing → http-lb → Monitoring"
-echo "     and watch traffic spread across both backends."
-echo "  2. Click ${BOLD}Check my progress${RESET} for every task in the lab."
-echo "  3. Quiz answer: closest region gets the traffic → ${BOLD}True${RESET}"
-echo
+retry "Creating stress-test VM" gcloud compute instances create stress-test \
+  --zone="$ZONE1" \
+  --machine-type=e2-micro \
+  --image=mywebserver \
+  --boot-disk-auto-delete=yes
+
+info "Waiting for stress-test VM..."
+sleep 45
+
+retry "Installing Apache Benchmark (apache2-utils)" gcloud compute ssh stress-test \
+  --zone="$ZONE1" \
+  --command="sudo apt-get update -y && sudo apt-get install -y apache2-utils"
+
+info "Starting stress test: 500000 requests, concurrency 1000"
+retry "Running Apache Benchmark stress test" gcloud compute ssh stress-test \
+  --zone="$ZONE1" \
+  --command="ab -n 500000 -c 1000 http://$LB_IP/"
+
+# ============================================================
+# FINAL OUTPUT
+# ============================================================
+step "LAB SETUP COMPLETE"
+
+echo -e "${G}Project ID        : $PROJECT_ID${N}"
+echo -e "${G}Region 1 / Zone   : $REGION1 / $ZONE1${N}"
+echo -e "${G}Region 2          : $REGION2${N}"
+echo -e "${G}Load Balancer IPv4: $LB_IP${N}"
+
+LB_IPv6=$(gcloud compute forwarding-rules describe http-lb-ipv6 \
+  --global --format="value(IPAddress)" 2>/dev/null)
+
+echo -e "${G}Load Balancer IPv6: $LB_IPv6${N}"
+
+echo -e "${Y}Open in browser:${N} http://$LB_IP"
+echo -e "${Y}Check progress in lab page after each major task.${N}"
+echo -e "${Y}Monitoring:${N} Network Services → Load Balancing → http-lb → Monitoring"
