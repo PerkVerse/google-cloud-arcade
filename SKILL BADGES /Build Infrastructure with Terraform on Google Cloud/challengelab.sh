@@ -1,142 +1,109 @@
 #!/bin/bash
 
-# Define color variables
-BLACK=`tput setaf 0`
-RED=`tput setaf 1`
+# ---------- Colors ----------
+CYAN=`tput setaf 6`
 GREEN=`tput setaf 2`
 YELLOW=`tput setaf 3`
-BLUE=`tput setaf 4`
-MAGENTA=`tput setaf 5`
-CYAN=`tput setaf 6`
-WHITE=`tput setaf 7`
-
-BG_BLACK=`tput setab 0`
-BG_RED=`tput setab 1`
-BG_GREEN=`tput setab 2`
-BG_YELLOW=`tput setab 3`
-BG_BLUE=`tput setab 4`
-BG_MAGENTA=`tput setab 5`
-BG_CYAN=`tput setab 6`
-BG_WHITE=`tput setab 7`
-
+RED=`tput setaf 1`
 BOLD=`tput bold`
 RESET=`tput sgr0`
 
-# Display welcome message
-echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"   
+echo "${CYAN}${BOLD}==================================================${RESET}"
+echo "${CYAN}${BOLD}        STARTING TERRAFORM CHALLENGE LAB          ${RESET}"
+echo "${CYAN}${BOLD}==================================================${RESET}"
 
+# ---------- Inputs (lab values as defaults: just press Enter) ----------
+read -p "${YELLOW}${BOLD}Enter bucket name [tf-bucket-152562]: ${RESET}" BUCKET
+read -p "${YELLOW}${BOLD}Enter VPC name [tf-vpc-752813]: ${RESET}" VPC
+read -p "${YELLOW}${BOLD}Enter zone [us-west1-b]: ${RESET}" ZONE
 
-# Get required variables from user
-read -p "${YELLOW}${BOLD}Enter your bucket name: ${RESET}" BUCKET
-read -p "${YELLOW}${BOLD}Enter your instance name: ${RESET}" INSTANCE
-read -p "${YELLOW}${BOLD}Enter your VPC name: ${RESET}" VPC
-read -p "${YELLOW}${BOLD}Enter your zone (e.g. us-central1-a): ${RESET}" ZONE
+BUCKET=${BUCKET:-tf-bucket-152562}
+VPC=${VPC:-tf-vpc-752813}
+ZONE=${ZONE:-us-west1-b}
+INSTANCE="tf-instance-811031"      # fixed by the lab (do not change)
 
-export BUCKET
-export INSTANCE
-export VPC
-export ZONE
+export BUCKET VPC ZONE INSTANCE
+echo "${GREEN}${BOLD}Variables set: $BUCKET | $VPC | $ZONE | $INSTANCE${RESET}"
 
-echo "${GREEN}${BOLD}Variables set successfully!${RESET}"
-echo
-# Install Terraform
-echo "${CYAN}${BOLD}Installing Terraform...${RESET}"
+# ---------- Install Terraform ----------
 cat <<'EOF' > ~/.customize_environment
-# Set up HashiCorp repository and install Terraform
 wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
 sudo apt update && sudo apt install -y terraform
 EOF
 bash ~/.customize_environment
+terraform --version
 
-
-echo "${BOLD}Starting Lab Execution${RESET}"
-
+# ---------- Environment ----------
 gcloud auth list
-
 export PROJECT_ID=$(gcloud config get-value project)
-
-gcloud config set compute/zone $ZONE
 export REGION=${ZONE%-*}
+gcloud config set compute/zone $ZONE
 gcloud config set compute/region $REGION
 
-export PROJECT_ID=$DEVSHELL_PROJECT_ID
+# Get instance IDs BY NAME (safe, order independent)
+export INSTANCE_ID_1=$(gcloud compute instances list --filter="name=tf-instance-1" --format="value(id)")
+export INSTANCE_ID_2=$(gcloud compute instances list --filter="name=tf-instance-2" --format="value(id)")
+echo "tf-instance-1 ID: $INSTANCE_ID_1"
+echo "tf-instance-2 ID: $INSTANCE_ID_2"
 
-instances_output=$(gcloud compute instances list --format="value(id)")
+# =====================================================
+# TASK 1: Configuration files
+# =====================================================
+cd ~
+mkdir -p modules/instances modules/storage
+touch main.tf variables.tf
+touch modules/instances/instances.tf modules/instances/outputs.tf modules/instances/variables.tf
+touch modules/storage/storage.tf modules/storage/outputs.tf modules/storage/variables.tf
 
-# Read the instance IDs into variables
-IFS=$'\n' read -r -d '' instance_id_1 instance_id_2 <<< "$instances_output"
-
-# Output instance IDs with custom name
-export INSTANCE_ID_1=$instance_id_1
-export INSTANCE_ID_2=$instance_id_2
-
-echo "$instance_id_1"
-echo "$instance_id_2"
-
-touch main.tf
-touch variables.tf
-mkdir modules
-cd modules
-mkdir instances
-cd instances
-touch instances.tf
-touch outputs.tf
-touch variables.tf
-cd ..
-mkdir storage
-cd storage
-touch storage.tf
-touch outputs.tf
-touch variables.tf
-cd
-
-cat > variables.tf <<EOF_CP
+# variables.tf (root + both modules)
+for f in variables.tf modules/instances/variables.tf modules/storage/variables.tf; do
+cat > $f <<EOF_CP
 variable "region" {
- default = "$REGION"
+  default = "$REGION"
 }
 
 variable "zone" {
- default = "$ZONE"
+  default = "$ZONE"
 }
 
 variable "project_id" {
- default = "$PROJECT_ID"
+  default = "$PROJECT_ID"
 }
 EOF_CP
+done
 
 cat > main.tf <<EOF_CP
 terraform {
   required_providers {
     google = {
-      source = "hashicorp/google"
-      version = "4.53.0"
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
   }
 }
 
 provider "google" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
 }
 
 module "instances" {
-  source     = "./modules/instances"
+  source = "./modules/instances"
 }
 EOF_CP
 
-terraform init 
+terraform init
 
-cd modules/instances/
-
-cat > instances.tf <<EOF_CP
+# =====================================================
+# TASK 2: Import infrastructure
+# =====================================================
+cat > modules/instances/instances.tf <<EOF_CP
 resource "google_compute_instance" "tf-instance-1" {
   name         = "tf-instance-1"
   machine_type = "n1-standard-1"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -145,8 +112,9 @@ resource "google_compute_instance" "tf-instance-1" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -156,7 +124,7 @@ resource "google_compute_instance" "tf-instance-1" {
 resource "google_compute_instance" "tf-instance-2" {
   name         = "tf-instance-2"
   machine_type = "n1-standard-1"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -165,8 +133,9 @@ resource "google_compute_instance" "tf-instance-2" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -174,49 +143,46 @@ resource "google_compute_instance" "tf-instance-2" {
 }
 EOF_CP
 
-cd ~
-
 terraform import module.instances.google_compute_instance.tf-instance-1 $INSTANCE_ID_1
 terraform import module.instances.google_compute_instance.tf-instance-2 $INSTANCE_ID_2
 
 terraform plan
 terraform apply --auto-approve
 
-cd modules/storage/
-
-cat > storage.tf <<EOF_CP
+# =====================================================
+# TASK 3: Remote backend
+# =====================================================
+cat > modules/storage/storage.tf <<EOF_CP
 resource "google_storage_bucket" "storage-bucket" {
-  name          = "$BUCKET"
-  location      = "US"
-  force_destroy = true
+  name                        = "$BUCKET"
+  location                    = "US"
+  force_destroy               = true
   uniform_bucket_level_access = true
 }
 EOF_CP
-
-cd ~
 
 cat > main.tf <<EOF_CP
 terraform {
   required_providers {
     google = {
-      source = "hashicorp/google"
-      version = "4.53.0"
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
   }
 }
 
 provider "google" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
 }
 
 module "instances" {
-  source     = "./modules/instances"
+  source = "./modules/instances"
 }
 
 module "storage" {
-  source     = "./modules/storage"
+  source = "./modules/storage"
 }
 EOF_CP
 
@@ -226,41 +192,42 @@ terraform apply --auto-approve
 cat > main.tf <<EOF_CP
 terraform {
   backend "gcs" {
-    bucket  = "$BUCKET"
-    prefix  = "terraform/state"
+    bucket = "$BUCKET"
+    prefix = "terraform/state"
   }
   required_providers {
     google = {
-      source = "hashicorp/google"
-      version = "4.53.0"
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
   }
 }
 
 provider "google" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
 }
 
 module "instances" {
-  source     = "./modules/instances"
+  source = "./modules/instances"
 }
 
 module "storage" {
-  source     = "./modules/storage"
+  source = "./modules/storage"
 }
 EOF_CP
 
-echo "yes" | terraform init
+terraform init -migrate-state -force-copy
 
-cd modules/instances/
-
-cat > instances.tf <<EOF_CP
+# =====================================================
+# TASK 4: Modify and update (3 instances, all e2-standard-2)
+# =====================================================
+cat > modules/instances/instances.tf <<EOF_CP
 resource "google_compute_instance" "tf-instance-1" {
   name         = "tf-instance-1"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -269,8 +236,9 @@ resource "google_compute_instance" "tf-instance-1" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -280,7 +248,7 @@ resource "google_compute_instance" "tf-instance-1" {
 resource "google_compute_instance" "tf-instance-2" {
   name         = "tf-instance-2"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -289,8 +257,9 @@ resource "google_compute_instance" "tf-instance-2" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -300,7 +269,7 @@ resource "google_compute_instance" "tf-instance-2" {
 resource "google_compute_instance" "$INSTANCE" {
   name         = "$INSTANCE"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -309,31 +278,27 @@ resource "google_compute_instance" "$INSTANCE" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
   allow_stopping_for_update = true
 }
 EOF_CP
-cd ~
 
 terraform init
 terraform apply --auto-approve
 
-terraform taint module.instances.google_compute_instance.$INSTANCE
-
-terraform plan
-terraform apply --auto-approve
-
-cd modules/instances/
-
-cat > instances.tf <<EOF_CP
+# =====================================================
+# TASK 5: Destroy the third instance (remove resource + apply)
+# =====================================================
+cat > modules/instances/instances.tf <<EOF_CP
 resource "google_compute_instance" "tf-instance-1" {
   name         = "tf-instance-1"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -342,8 +307,9 @@ resource "google_compute_instance" "tf-instance-1" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -353,7 +319,7 @@ resource "google_compute_instance" "tf-instance-1" {
 resource "google_compute_instance" "tf-instance-2" {
   name         = "tf-instance-2"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -362,8 +328,9 @@ resource "google_compute_instance" "tf-instance-2" {
   }
 
   network_interface {
- network = "default"
+    network = "default"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -371,72 +338,72 @@ resource "google_compute_instance" "tf-instance-2" {
 }
 EOF_CP
 
-cd ~
+terraform init
 terraform apply --auto-approve
 
+# =====================================================
+# TASK 6: VPC module from Registry (version 10.0.0)
+# =====================================================
 cat > main.tf <<EOF_CP
 terraform {
   backend "gcs" {
-    bucket  = "$BUCKET"
-    prefix  = "terraform/state"
+    bucket = "$BUCKET"
+    prefix = "terraform/state"
   }
   required_providers {
     google = {
-      source = "hashicorp/google"
-      version = "4.53.0"
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
   }
 }
 
 provider "google" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
 }
 
 module "instances" {
-  source     = "./modules/instances"
+  source = "./modules/instances"
 }
 
 module "storage" {
-  source     = "./modules/storage"
+  source = "./modules/storage"
 }
 
 module "vpc" {
-    source  = "terraform-google-modules/network/google"
-    version = "~> 6.0.0"
+  source  = "terraform-google-modules/network/google"
+  version = "10.0.0"
 
-    project_id   = "$PROJECT_ID"
-    network_name = "$VPC"
-    routing_mode = "GLOBAL"
+  project_id   = "$PROJECT_ID"
+  network_name = "$VPC"
+  routing_mode = "GLOBAL"
 
-    subnets = [
-        {
-            subnet_name           = "subnet-01"
-            subnet_ip             = "10.10.10.0/24"
-            subnet_region         = "$REGION"
-        },
-        {
-            subnet_name           = "subnet-02"
-            subnet_ip             = "10.10.20.0/24"
-            subnet_region         = "$REGION"
-            subnet_private_access = "true"
-            subnet_flow_logs      = "true"
-            description           = "Subscribe to Dr. Abhishek Cloud Tutorials"
-        },
-    ]
+  subnets = [
+    {
+      subnet_name   = "subnet-01"
+      subnet_ip     = "10.10.10.0/24"
+      subnet_region = "$REGION"
+    },
+    {
+      subnet_name   = "subnet-02"
+      subnet_ip     = "10.10.20.0/24"
+      subnet_region = "$REGION"
+    },
+  ]
 }
 EOF_CP
 
 terraform init
 terraform apply --auto-approve
 
-cd modules/instances/
-cat > instances.tf <<EOF_CP
+# Connect instances to the new VPC / subnets
+cat > modules/instances/instances.tf <<EOF_CP
 resource "google_compute_instance" "tf-instance-1" {
   name         = "tf-instance-1"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -445,9 +412,10 @@ resource "google_compute_instance" "tf-instance-1" {
   }
 
   network_interface {
-    network = "$VPC"
+    network    = "$VPC"
     subnetwork = "subnet-01"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -457,7 +425,7 @@ resource "google_compute_instance" "tf-instance-1" {
 resource "google_compute_instance" "tf-instance-2" {
   name         = "tf-instance-2"
   machine_type = "e2-standard-2"
-  zone         = "$ZONE"
+  zone         = var.zone
 
   boot_disk {
     initialize_params {
@@ -466,9 +434,10 @@ resource "google_compute_instance" "tf-instance-2" {
   }
 
   network_interface {
-    network = "$VPC"
+    network    = "$VPC"
     subnetwork = "subnet-02"
   }
+
   metadata_startup_script = <<-EOT
         #!/bin/bash
     EOT
@@ -476,64 +445,15 @@ resource "google_compute_instance" "tf-instance-2" {
 }
 EOF_CP
 
-cd ~
 terraform init
 terraform apply --auto-approve
 
-cat > main.tf <<EOF_CP
-terraform {
-  backend "gcs" {
-    bucket  = "$BUCKET"
-    prefix  = "terraform/state"
-  }
-  required_providers {
-    google = {
-      source = "hashicorp/google"
-      version = "4.53.0"
-    }
-  }
-}
+# =====================================================
+# TASK 7: Firewall
+# =====================================================
+cat >> main.tf <<EOF_CP
 
-provider "google" {
-  project     = var.project_id
-  region      = var.region
-  zone        = var.zone
-}
-
-module "instances" {
-  source     = "./modules/instances"
-}
-
-module "storage" {
-  source     = "./modules/storage"
-}
-
-module "vpc" {
-    source  = "terraform-google-modules/network/google"
-    version = "~> 6.0.0"
-
-    project_id   = "$PROJECT_ID"
-    network_name = "$VPC"
-    routing_mode = "GLOBAL"
-
-    subnets = [
-        {
-            subnet_name           = "subnet-01"
-            subnet_ip             = "10.10.10.0/24"
-            subnet_region         = "$REGION"
-        },
-        {
-            subnet_name           = "subnet-02"
-            subnet_ip             = "10.10.20.0/24"
-            subnet_region         = "$REGION"
-            subnet_private_access = "true"
-            subnet_flow_logs      = "true"
-            description           = "Subscribe to Dr. Abhishek Cloud Tutorials"
-        },
-    ]
-}
-
-resource "google_compute_firewall" "tf-firewall"{
+resource "google_compute_firewall" "tf-firewall" {
   name    = "tf-firewall"
   network = "projects/$PROJECT_ID/global/networks/$VPC"
 
@@ -542,8 +462,9 @@ resource "google_compute_firewall" "tf-firewall"{
     ports    = ["80"]
   }
 
-  source_tags = ["web"]
   source_ranges = ["0.0.0.0/0"]
+
+  depends_on = [module.vpc]
 }
 EOF_CP
 
@@ -551,11 +472,5 @@ terraform init
 terraform apply --auto-approve
 
 echo
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}              LAB COMPLETED SUCCESSFULLY!              ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo
-echo "${RED_TEXT}${BOLD_TEXT}${UNDERLINE_TEXT}https://www.youtube.com/@PerkVers${RESET_FORMAT}"
-echo "${GREEN_TEXT}${BOLD_TEXT}👍 LIKE | 🔄 SHARE | 🔔 SUBSCRIBE${RESET_FORMAT}"
-echo "${YELLOW_TEXT}${BOLD_TEXT}PERKVERSE - Google Cloud Arcade Labs & Tech Opportunities${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}Follow @PerkVers for more updates${RESET_FORMAT}"
+echo "${GREEN}${BOLD}==================== ALL TASKS DONE ====================${RESET}"
+echo "Now click 'Check my progress' on every task."
