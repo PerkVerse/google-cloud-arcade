@@ -282,8 +282,7 @@ for Z in $CANDS; do
   if gcloud compute instances describe stress-test --zone="$Z" >/dev/null 2>&1; then
     STRESS_ZONE="$Z"; ok "stress-test VM already exists in $Z"; break
   fi
-  echo "           $(echo "$OUT" | grep -m1 -iE 'ERROR|exhaust|quota|constraint' | cut -c1-140)"
-done
+  echo "$OUT" | head -n 6 | cut -c1-200 | sed 's/^/           /'done
 [ -z "$STRESS_ZONE" ] && { fail "Could not create stress-test in any zone"; exit 1; }
 sleep 30
 
