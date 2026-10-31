@@ -297,8 +297,8 @@ done
 # ==============================================================================
 step "Task 6: Stress test"
 
-CANDS=$( (gcloud compute zones list --filter="name~^${CONT1}-" --format="value(name)" | grep -v "^${REGION1}-"; \
-          gcloud compute zones list --filter="name~^${REGION1}-" --format="value(name)") )
+CANDS=$( (gcloud compute zones list --filter="name~^${REGION1}-" --format="value(name)"; \
+          gcloud compute zones list --filter="name~^${REGION2}-" --format="value(name)") )
 
 STRESS_ZONE=""
 for Z in $CANDS; do
