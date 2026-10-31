@@ -229,7 +229,7 @@ attached() {
 if attached us-1-mig; then ok "Backend us-1-mig already attached"; else
   retry "Backend us-1-mig (Rate, 50 RPS)" gcloud compute backend-services add-backend http-backend \
     --global --instance-group=us-1-mig --instance-group-region="$REGION1" \
-    --balancing-mode=RATE --max-rate=50 --capacity-scaler=1.0
+    --balancing-mode=RATE --max-rate-per-instance=50 --capacity-scaler=1.0
 fi
 
 if attached notus-1-mig; then ok "Backend notus-1-mig already attached"; else
