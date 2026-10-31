@@ -270,8 +270,22 @@ done
 # ==============================================================================
 step "Task 6: Stress test"
 
-retry "Stress-test VM in $STRESS_ZONE" gcloud compute instances create stress-test \
-  --zone="$STRESS_ZONE" --machine-type=e2-micro --image=mywebserver
+CANDS=$( (gcloud compute zones list --filter="name~^${CONT1}-" --format="value(name)" | grep -v "^${REGION1}-"; \
+          gcloud compute zones list --filter="name~^${REGION1}-" --format="value(name)") )
+
+STRESS_ZONE=""
+for Z in $CANDS; do
+  info "Trying zone $Z for stress-test..."
+  if OUT=$(gcloud compute instances create stress-test --zone="$Z" --machine-type=e2-micro --image=mywebserver 2>&1); then
+    STRESS_ZONE="$Z"; ok "stress-test VM created in $Z"; break
+  fi
+  if gcloud compute instances describe stress-test --zone="$Z" >/dev/null 2>&1; then
+    STRESS_ZONE="$Z"; ok "stress-test VM already exists in $Z"; break
+  fi
+  echo "           $(echo "$OUT" | grep -m1 -iE 'ERROR|exhaust|quota|constraint' | cut -c1-140)"
+done
+[ -z "$STRESS_ZONE" ] && { fail "Could not create stress-test in any zone"; exit 1; }
+sleep 30
 
 SSH_OPTS=(--zone="$STRESS_ZONE" --quiet --strict-host-key-checking=no)
 
