@@ -2,7 +2,6 @@ echo "CYANTEXT{BOLD_TEXT}=======================================================
 echo "CYANTEXT{BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
 echo "CYANTEXT{BOLD_TEXT}==================================================================${RESET_FORMAT}"
 
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #----------------------------------------------------start--------------------------------------------------#
 
@@ -174,13 +173,34 @@ echo "RED{BOLD}Task 7. RESET""{WHITE}BOLDCreateaWordPressdeployment{RESET}" "GRE
 echo "Task 8: Enable monitoring"
 
 PROJECT_ID=$(gcloud config get-value project)
+gcloud services enable monitoring.googleapis.com
 
-gcloud monitoring uptime create wordpress-uptime-check \
-  --resource-type=uptime-url \
-  --resource-labels=host="$(kubectl get service wordpress -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+# LoadBalancer IP aane tak wait
+EXTERNAL_IP=""
+while [ -z "$EXTERNAL_IP" ]; do
+  EXTERNAL_IP=$(kubectl get svc -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}')
+  [ -z "$EXTERNAL_IP" ] && echo "Waiting for external IP..." && sleep 10
+done
+echo "WordPress IP: $EXTERNAL_IP"
 
+# Uptime check create (REST API)
+curl -s -X POST \
+  "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/uptimeCheckConfigs" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"displayName\": \"wordpress-uptime-check\",
+    \"monitoredResource\": {
+      \"type\": \"uptime_url\",
+      \"labels\": { \"project_id\": \"${PROJECT_ID}\", \"host\": \"${EXTERNAL_IP}\" }
+    },
+    \"httpCheck\": { \"path\": \"/\", \"port\": 80, \"requestMethod\": \"GET\" },
+    \"period\": \"60s\",
+    \"timeout\": \"10s\"
+  }"
+
+echo
 echo "Task 8 command executed. Check progress in Google Skills."
-
 # Get the IAM policy JSON
 IAM_POLICY_JSON=$(gcloud projects get-iam-policy $DEVSHELL_PROJECT_ID --format=json)
 
