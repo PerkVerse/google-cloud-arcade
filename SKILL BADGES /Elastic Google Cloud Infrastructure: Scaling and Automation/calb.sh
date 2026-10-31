@@ -45,13 +45,14 @@ retry() {
     if grep -qi 'already exists' "$log"; then
       ok "$desc (already exists)"; rm -f "$log"; return 0
     fi
-    if grep -Eqi 'unrecognized arguments|invalid choice|invalid value|Usage:|flag.*does not exist|not a valid' "$log"; then
+    if grep -Eqi 'unrecognized arguments|invalid choice|invalid value|Usage:|flag.*does not exist|not a valid|quota|constraint|permission' "$log"; then
       cat "$log"; fail "$desc: command error, not retrying."; rm -f "$log"; return 1
     fi
     if [ "$attempt" -ge 20 ]; then
       cat "$log"; fail "$desc failed after 20 attempts."; rm -f "$log"; return 1
     fi
-    info "$desc: not ready yet (try $attempt/20), retrying in 10s..."
+    info "$desc: attempt $attempt/20 failed, retrying in 10s"
+    grep -m1 -iE 'ERROR|exhaust|quota|constraint' "$log" | cut -c1-160 | sed 's/^/           /'
     sleep 10
     attempt=$((attempt+1))
   done
