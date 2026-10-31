@@ -203,8 +203,35 @@ create_mig() {
     --target-load-balancing-utilization=0.8 --cool-down-period=60
 }
 
-create_mig "us-1-mig"    "$REGION1"
-create_mig "notus-1-mig" "$REGION2"
+create_mig "us-1-mig" "$REGION1" || exit 1
+
+# Try the lab's Region 2 first, then other regions until one is allowed by the project policy
+MIG2_OK=0
+CAND_R=$( { [ -n "$REGION2_OVERRIDE" ] && echo "$REGION2_OVERRIDE"
+            echo "$ALL_REGIONS" | grep -v "^${CONT1}-"
+            echo "$ALL_REGIONS" | grep -v "^${REGION1}\$" | grep "^${CONT1}-"; } | awk '!s[$0]++' )
+
+for r in $CAND_R; do
+  if gcloud compute instance-groups managed describe notus-1-mig --region="$r" >/dev/null 2>&1; then
+    REGION2="$r"; MIG2_OK=1; ok "notus-1-mig already exists in $r"; break
+  fi
+  info "Trying Region 2 = $r"
+  if OUT=$(gcloud compute instance-groups managed create notus-1-mig \
+        --template=mywebserver-template --region="$r" --size=1 \
+        --health-check=http-health-check --initial-delay=60 2>&1); then
+    REGION2="$r"; MIG2_OK=1; ok "Instance group notus-1-mig created in $r"; break
+  fi
+  echo "$OUT" | grep -qi 'resourceLocations' || echo "$OUT" | head -n 3 | cut -c1-180 | sed 's/^/           /'
+done
+
+[ "$MIG2_OK" = "1" ] || { fail "No allowed region found for notus-1-mig. Set REGION2_OVERRIDE from your lab panel."; exit 1; }
+
+retry "Named port http:80 on notus-1-mig" gcloud compute instance-groups managed set-named-ports notus-1-mig \
+  --region="$REGION2" --named-ports=http:80
+retry "Autoscaling on notus-1-mig (1-2 instances, 80% LB utilization)" \
+  gcloud compute instance-groups managed set-autoscaling notus-1-mig \
+  --region="$REGION2" --min-num-replicas=1 --max-num-replicas=2 \
+  --target-load-balancing-utilization=0.8 --cool-down-period=60
 
 info "Waiting for the instance groups to become stable..."
 gcloud compute instance-groups managed wait-until us-1-mig    --stable --region="$REGION1" --timeout=300 >/dev/null 2>&1
