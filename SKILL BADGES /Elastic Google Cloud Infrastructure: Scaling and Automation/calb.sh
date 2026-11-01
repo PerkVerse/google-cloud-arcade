@@ -348,24 +348,22 @@ curl -s localhost | grep -q Apache && echo "LAB_WEBSERVER_READY"'
   # ============================================================================
   step "Task 6: Stress test"
 
-  # Candidate zones: other nearby regions first, then Region 1, then Region 2
-  CANDS=""
-  for r in $(echo "$ALL_REGIONS" | grep "^${CONT1}-" | grep -vx "$REGION1" | grep -vx "$REGION2"); do
-    CANDS="$CANDS $(echo "$ALL_ZONES" | grep -m1 "^${r}-")"
-  done
-  CANDS="$CANDS $(echo "$ALL_ZONES" | grep "^${REGION1}-") $(echo "$ALL_ZONES" | grep "^${REGION2}-")"
+  # Candidate zones: other nearby regions first, then Region 1, then Region 2  
+  # Candidate zones: Region 1 first (always allowed), then Region 2
+  CANDS="$(echo "$ALL_ZONES" | grep "^${REGION1}-") $(echo "$ALL_ZONES" | grep "^${REGION2}-")"
+  LAST_ERR=""
 
   STRESS_ZONE=""; IAP=0
 
-  # Attempt A: VM with an external IP
+  # Attempt A: VM with an external IP  info "Creating the stress-test VM..."
+  info "Creating the stress-test VM..."
   for Z in $CANDS; do
-    info "Trying zone $Z (external IP)"
     if OUT=$(gcloud compute instances create stress-test --zone="$Z" --machine-type=e2-micro --image=mywebserver 2>&1); then
       STRESS_ZONE="$Z"; break
     fi
     if gcloud compute instances describe stress-test --zone="$Z" >/dev/null 2>&1; then STRESS_ZONE="$Z"; break; fi
+    LAST_ERR="$OUT"
     if echo "$OUT" | grep -qiE 'vmExternalIpAccess'; then info "External IPs are blocked by policy."; break; fi
-    echo "$OUT" | grep -qi 'resourceLocations' || echo "$OUT" | head -n 3 | cut -c1-200 | sed 's/^/           /'
   done
 
   # Attempt B: VM without an external IP in Region 1 (Cloud NAT is there), SSH through IAP
@@ -377,11 +375,15 @@ curl -s localhost | grep -q Apache && echo "LAB_WEBSERVER_READY"'
            --image=mywebserver --network-interface=subnet=default,no-address 2>&1); then
         STRESS_ZONE="$Z"; IAP=1; break
       fi
-      echo "$OUT" | head -n 3 | cut -c1-200 | sed 's/^/           /'
+            LAST_ERR="$OUT"
     done
   fi
 
-  [ -z "$STRESS_ZONE" ] && { fail "Could not create stress-test in any zone. Check the errors above."; return 1; }
+  if [ -z "$STRESS_ZONE" ]; then
+    echo "$LAST_ERR" | head -n 4 | cut -c1-200 | sed 's/^/           /'
+    fail "Could not create stress-test in any zone."
+    return 1
+  fi
   ok "stress-test VM is ready in $STRESS_ZONE"
 
   SSH=(--zone="$STRESS_ZONE" --quiet --strict-host-key-checking=no)
