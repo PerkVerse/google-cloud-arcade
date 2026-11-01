@@ -238,6 +238,25 @@ curl -s localhost | grep -q Apache && echo "LAB_WEBSERVER_READY"'
 
   create_mig "notus-1-mig" "$REGION2" || return 1
 
+  # The lab needs a TCP health check. If an HTTP one exists from an earlier run, swap it.
+  HC_TYPE=$(gcloud compute health-checks describe http-health-check --format="value(type)" 2>/dev/null)
+  if [ -n "$HC_TYPE" ] && [ "$HC_TYPE" != "TCP" ]; then
+    info "Health check is $HC_TYPE but the lab needs TCP. Fixing it..."
+    gcloud compute health-checks create tcp tmp-tcp-check --port=80 >/dev/null 2>&1
+    gcloud compute backend-services describe http-backend --global >/dev/null 2>&1 && \
+      gcloud compute backend-services update http-backend --global --health-checks=tmp-tcp-check >/dev/null 2>&1
+    gcloud compute instance-groups managed update us-1-mig    --region="$REGION1" --health-check=tmp-tcp-check --initial-delay=60 >/dev/null 2>&1
+    gcloud compute instance-groups managed update notus-1-mig --region="$REGION2" --health-check=tmp-tcp-check --initial-delay=60 >/dev/null 2>&1
+    gcloud compute health-checks delete http-health-check --quiet >/dev/null 2>&1
+    gcloud compute health-checks create tcp http-health-check --port=80 >/dev/null 2>&1
+    gcloud compute backend-services describe http-backend --global >/dev/null 2>&1 && \
+      gcloud compute backend-services update http-backend --global --health-checks=http-health-check >/dev/null 2>&1
+    gcloud compute instance-groups managed update us-1-mig    --region="$REGION1" --health-check=http-health-check --initial-delay=60 >/dev/null 2>&1
+    gcloud compute instance-groups managed update notus-1-mig --region="$REGION2" --health-check=http-health-check --initial-delay=60 >/dev/null 2>&1
+    gcloud compute health-checks delete tmp-tcp-check --quiet >/dev/null 2>&1
+    ok "Health check http-health-check is now TCP"
+  fi
+
   info "Waiting for the instance groups to become stable..."
   gcloud compute instance-groups managed wait-until us-1-mig    --stable --region="$REGION1" --timeout=300 >/dev/null 2>&1
   gcloud compute instance-groups managed wait-until notus-1-mig --stable --region="$REGION2" --timeout=300 >/dev/null 2>&1
