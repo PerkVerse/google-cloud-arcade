@@ -133,9 +133,13 @@ main() {
   retry "Cloud Router nat-router-us1" gcloud compute routers create nat-router-us1 \
     --network=default --region="$REGION1" || return 1
 
-  retry "Cloud NAT gateway nat-config" gcloud compute routers nats create nat-config \
-    --router=nat-router-us1 --region="$REGION1" \
-    --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges || return 1
+  if gcloud compute routers nats describe nat-config --router=nat-router-us1 --region="$REGION1" >/dev/null 2>&1; then
+    ok "Cloud NAT gateway nat-config (already exists)"
+  else
+    retry "Cloud NAT gateway nat-config" gcloud compute routers nats create nat-config \
+      --router=nat-router-us1 --region="$REGION1" \
+      --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges || return 1
+  fi
 
   info "Waiting for the NAT gateway to become active..."
   for i in $(seq 1 12); do
