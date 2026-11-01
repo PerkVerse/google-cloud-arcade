@@ -316,6 +316,33 @@ curl -s localhost | grep -q Apache && echo "LAB_WEBSERVER_READY"'
   [ -n "$RESULT" ] && ok "Load balancer is serving Apache traffic" \
                    || fail "Not responding yet. Wait 2-3 minutes, then open http://$LB_IP"
 
+    # ---------- Verify and repair Task 4 / Task 5 settings ----------
+  step "Verify: Task 4 and Task 5 settings"
+
+  chk() { if [ "$2" = "$3" ]; then ok "$1: $2"; else fail "$1: found '$2', expected '$3'"; fi; }
+
+  # Re-apply the settings the lab checker looks at (safe to repeat)
+  gcloud compute backend-services update http-backend --global \
+    --health-checks=http-health-check >/dev/null 2>&1
+  for pair in "us-1-mig:$REGION1" "notus-1-mig:$REGION2"; do
+    M="${pair%%:*}"; RG="${pair##*:}"
+    gcloud compute instance-groups managed update "$M" --region="$RG" \
+      --health-check=http-health-check --initial-delay=60 >/dev/null 2>&1
+    gcloud compute instance-groups managed set-autoscaling "$M" --region="$RG" \
+      --min-num-replicas=1 --max-num-replicas=2 \
+      --target-load-balancing-utilization=0.8 --cool-down-period=60 >/dev/null 2>&1
+  done
+
+  chk "Health check type" "$(gcloud compute health-checks describe http-health-check --format='value(type)' 2>/dev/null)" "TCP"
+  chk "Health check port" "$(gcloud compute health-checks describe http-health-check --format='value(tcpHealthCheck.port)' 2>/dev/null)" "80"
+  chk "Backend service health check" "$(gcloud compute backend-services describe http-backend --global --format='value(healthChecks[0].basename())' 2>/dev/null)" "http-health-check"
+  for pair in "us-1-mig:$REGION1" "notus-1-mig:$REGION2"; do
+    M="${pair%%:*}"; RG="${pair##*:}"
+    chk "$M autohealing (check, delay)" "$(gcloud compute instance-groups managed describe "$M" --region="$RG" --format='value(autoHealingPolicies[0].healthCheck.basename(),autoHealingPolicies[0].initialDelaySec)' 2>/dev/null | tr '\t' ' ')" "http-health-check 60"
+    chk "$M autoscaler (min max target cooldown)" "$(gcloud compute autoscalers list --filter="target~/${M}\$" --format='value(autoscalingPolicy.minNumReplicas,autoscalingPolicy.maxNumReplicas,autoscalingPolicy.loadBalancingUtilization.utilizationTarget,autoscalingPolicy.coolDownPeriodSec)' 2>/dev/null | tr '\t' ' ')" "1 2 0.8 60"
+  done
+  info "Wait 2-3 minutes, then click Check my progress on Task 4 and Task 5."
+
   # ============================================================================
   # TASK 6 - STRESS TEST
   # ============================================================================
