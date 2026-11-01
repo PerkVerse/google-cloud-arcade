@@ -204,7 +204,7 @@ curl -s localhost | grep -q Apache && echo "LAB_WEBSERVER_READY"'
     --network-interface=network=default,no-address \
     --tags=allow-health-checks || return 1
 
-  retry "HTTP health check http-health-check" gcloud compute health-checks create http http-health-check \
+  retry "TCP health check http-health-check" gcloud compute health-checks create tcp http-health-check \
     --port=80 || return 1
 
   create_mig() {
