@@ -1,4 +1,4 @@
-#!/bin/bash
+f#!/bin/bash
 # ==============================================================================
 #  LAB    : Configure an Application Load Balancer with Autoscaling (OCBL105)
 #  SERIES : Elastic Google Cloud Infrastructure: Scaling and Automation
@@ -41,7 +41,7 @@ retry() {
     if "$@" >"$log" 2>&1; then
       ok "$desc"; rm -f "$log"; return 0
     fi
-    if grep -qi 'already exists' "$log"; then
+    if grep -Eqi 'already exists|duplicate|alreadyExists' "$log"; then
       ok "$desc (already exists)"; rm -f "$log"; return 0
     fi
     if grep -Eqi 'unrecognized arguments|invalid choice|invalid value|Usage:|flag.*does not exist|not a valid|quota|constraint|permission' "$log"; then
