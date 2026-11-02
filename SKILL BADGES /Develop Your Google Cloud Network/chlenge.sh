@@ -219,14 +219,7 @@ done
 
 echo "RED{BOLD}Task 9. RESET""{WHITE}BOLDProvideaccessforanadditionalengineer{RESET}" "GREEN{BOLD}Completed${RESET}"
 
-echo
-echo "CYANTEXT{BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo "CYANTEXT{BOLD_TEXT}              LAB COMPLETED SUCCESSFULLY!              ${RESET_FORMAT}"
-echo "CYANTEXT{BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo
-echo "REDTEXT{BOLD_TEXT}UNDERLINETEXThttps://www.youtube.com/@PerkVers{RESET_FORMAT}"
-echo "GREENTEXT{BOLD_TEXT}👍 LIKE | 🔄 SHARE | 🔔 SUBSCRIBE${RESET_FORMAT}"
-echo "YELLOWTEXT{BOLD_TEXT}PERKVERSE - Google Cloud Arcade Labs & Tech Opportunities${RESET_FORMAT}"
-echo "CYANTEXT{BOLD_TEXT}Follow @PerkVers for more updates${RESET_FORMAT}"
-
-
+echo -e "\n\033[1;32m=====================================================\033[0m"
+echo -e "\033[1;32m   🎉 LAB COMPLETED SUCCESSFULLY BY PERKVERSE!      \033[0m"
+echo -e "\033[1;32m   👉 Subscribe for Next Labs: youtube.com/@PerkVers \033[0m"
+echo -e "\033[1;32m=====================================================\033[0m\n"
