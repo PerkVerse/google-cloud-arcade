@@ -312,3 +312,8 @@ else
 fi
 LAB_SCRIPT
 bash ~/tf_lab.sh
+
+echo -e "\n\033[1;32m=====================================================\033[0m"
+echo -e "\033[1;32m   🎉 LAB COMPLETED SUCCESSFULLY BY PERKVERSE!      \033[0m"
+echo -e "\033[1;32m   👉 Subscribe for Next Labs: youtube.com/@PerkVerse \033[0m"
+echo -e "\033[1;32m=====================================================\033[0m\n"
