@@ -365,3 +365,8 @@ info "Full log   : $LOG"
 echo
 echo "  ${YLW}${B}Next:${R} lab page par har task ke ${B}'Check my progress'${R} button click karo."
 echo
+
+echo -e "\n\033[1;32m=====================================================\033[0m"
+echo -e "\033[1;32m   🎉 LAB COMPLETED SUCCESSFULLY BY PERKVERSE!      \033[0m"
+echo -e "\033[1;32m   👉 Subscribe for Next Labs: youtube.com/@PerkVers \033[0m"
+echo -e "\033[1;32m=====================================================\033[0m\n"
