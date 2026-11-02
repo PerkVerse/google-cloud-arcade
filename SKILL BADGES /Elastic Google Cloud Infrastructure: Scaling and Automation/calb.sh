@@ -417,3 +417,8 @@ curl -s localhost | grep -q Apache && echo "LAB_WEBSERVER_READY"'
 }
 
 main
+
+echo -e "\n\033[1;32m=====================================================\033[0m"
+echo -e "\033[1;32m   🎉 LAB COMPLETED SUCCESSFULLY BY PERKVERSE!      \033[0m"
+echo -e "\033[1;32m   👉 Subscribe for Next Labs: youtube.com/@PerkVers \033[0m"
+echo -e "\033[1;32m=====================================================\033[0m\n"
