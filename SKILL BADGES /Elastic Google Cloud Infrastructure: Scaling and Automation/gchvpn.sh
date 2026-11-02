@@ -356,3 +356,8 @@ run "Delete subnet on-prem-subnet1" gcloud compute networks subnets delete on-pr
 run "Delete VPC vpc-demo" gcloud compute networks delete vpc-demo --quiet
 run "Delete VPC on-prem" gcloud compute networks delete on-prem --quiet
 echo; echo "  ${GRN}${BOLD}🧹 Cleanup complete!${RST}"
+
+echo -e "\n\033[1;32m=====================================================\033[0m"
+echo -e "\033[1;32m   🎉 LAB COMPLETED SUCCESSFULLY BY PERKVERSE!      \033[0m"
+echo -e "\033[1;32m   👉 Subscribe for Next Labs: youtube.com/@PerkVers \033[0m"
+echo -e "\033[1;32m=====================================================\033[0m\n"
