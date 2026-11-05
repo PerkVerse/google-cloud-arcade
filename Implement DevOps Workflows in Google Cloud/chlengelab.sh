@@ -364,3 +364,8 @@ run_task task5_dev
 run_task task5_prod
 run_task task6
 final_report
+
+echo -e "\n\033[1;32m=====================================================\033[0m"
+echo -e "\033[1;32m   🎉 LAB COMPLETED SUCCESSFULLY BY PERKVERSE!      \033[0m"
+echo -e "\033[1;32m   👉 Subscribe for Next Labs: youtube.com/@PerkVers \033[0m"
+echo -e "\033[1;32m=====================================================\033[0m\n"
