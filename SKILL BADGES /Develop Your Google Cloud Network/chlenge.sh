@@ -1,6 +1,18 @@
-echo "CYANTEXT{BOLD_TEXT}==================================================================${RESET_FORMAT}"
-echo "CYANTEXT{BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
-echo "CYANTEXT{BOLD_TEXT}==================================================================${RESET_FORMAT}"
+BLACK_TEXT=$(tput setaf 0)
+RED_TEXT=$(tput setaf 1)
+GREEN_TEXT=$(tput setaf 2)
+YELLOW_TEXT=$(tput setaf 3)
+BLUE_TEXT=$(tput setaf 4)
+MAGENTA_TEXT=$(tput setaf 5)
+CYAN_TEXT=$(tput setaf 6)
+WHITE_TEXT=$(tput setaf 7)
+BOLD_TEXT=$(tput bold)
+RESET_FORMAT=$(tput sgr0)
+
+echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
+echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+echo "${YELLOW_TEXT}${BOLD_TEXT}Starting${RESET_FORMAT} ${GREEN_TEXT}${BOLD_TEXT}Execution${RESET_FORMAT}"
 
 
 #----------------------------------------------------start--------------------------------------------------#
