@@ -256,6 +256,13 @@ run "Firewall fw-allow-health-check-and-proxy" gcloud compute firewall-rules cre
 # =====================================================================
 step "TASK 3 | Failover and global distribution test"
 # =====================================================================
+alb_a_vms() {
+  gcloud compute instance-groups managed list-instances mig-alb-api-a --region="$REGION_A" --format='value(instance)' 2>/dev/null | \
+  while read -r URL; do
+    [ -z "$URL" ] && continue
+    echo "${URL##*/} $(sed -n 's#.*/zones/\([^/]*\)/.*#\1#p' <<<"$URL")"
+  done
+}
 LB_IP=$(gcloud compute addresses describe ip-alb-global --global --format='value(address)')
 info "Global LB IP: $LB_IP"
 info "Waiting for the load balancer to start serving (can take 3-7 minutes)..."
@@ -270,7 +277,7 @@ for i in $(seq 1 16); do curl -k -s -m 5 "https://$LB_IP" | grep "Hello from"; s
 # --- simulate failure: stop nginx on every VM in mig-alb-api-a ---
 echo
 info "Simulating failure: stopping nginx in mig-alb-api-a"
-gcloud compute instances list --filter="name~^mig-alb-api-a" --format='value(name,zone.basename())' | \
+alb_a_vms | \
 while read -r VM VZ; do
   [ -z "$VM" ] && continue
   for try in 1 2 3; do
@@ -295,7 +302,7 @@ read -t 90 -r _ </dev/tty 2>/dev/null || sleep 5
 
 # --- restore ---
 info "Restoring backend: starting nginx"
-gcloud compute instances list --filter="name~^mig-alb-api-a" --format='value(name,zone.basename())' | \
+alb_a_vms | \
 while read -r VM VZ; do
   [ -z "$VM" ] && continue
   for try in 1 2 3; do
