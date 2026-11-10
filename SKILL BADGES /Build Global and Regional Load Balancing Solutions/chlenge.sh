@@ -50,7 +50,11 @@ PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
 [ -z "$PROJECT_ID" ] && PROJECT_ID=$(gcloud projects list --format="value(projectId)" --limit=1)
 gcloud config set project "$PROJECT_ID" >/dev/null 2>&1
 
-run "Enable Compute Engine API" gcloud services enable compute.googleapis.com
+if gcloud services list --enabled --format="value(config.name)" 2>/dev/null | grep -q "^compute.googleapis.com$"; then
+  ok "Compute Engine API already enabled"
+else
+  gcloud services enable compute.googleapis.com >/dev/null 2>&1 && ok "Compute Engine API enabled" || warn "Skipping API enable (not permitted in this lab)"
+fi
 
 NETWORK="lb-network"
 
