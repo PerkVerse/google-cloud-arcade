@@ -141,9 +141,17 @@ run "Regional health check" gcloud compute health-checks create tcp hc-proxy-int
 run "Backend service" gcloud compute backend-services create service-proxy-internal \
   --load-balancing-scheme=INTERNAL_MANAGED --protocol=TCP --port-name=tcp80 \
   --region="$REGION_B" --health-checks=hc-proxy-internal --health-checks-region="$REGION_B"
-run "Add MIG to backend service" gcloud compute backend-services add-backend service-proxy-internal \
-  --region="$REGION_B" --instance-group=mig-proxy-internal --instance-group-region="$REGION_B" \
-  --balancing-mode=UTILIZATION
+if gcloud compute backend-services describe service-proxy-internal --region="$REGION_B" \
+     --format="value(backends[].group)" 2>/dev/null | grep -q "mig-proxy-internal"; then
+  ok "MIG already attached to backend service"
+else
+  run "Add MIG to backend service" gcloud compute backend-services add-backend service-proxy-internal \
+    --region="$REGION_B" --instance-group=mig-proxy-internal --instance-group-region="$REGION_B" \
+    --balancing-mode=UTILIZATION --max-utilization=0.8 \
+  || run "Add MIG to backend service (CONNECTION mode)" gcloud compute backend-services add-backend service-proxy-internal \
+    --region="$REGION_B" --instance-group=mig-proxy-internal --instance-group-region="$REGION_B" \
+    --balancing-mode=CONNECTION --max-connections-per-instance=100
+fi
 run "Target TCP proxy" gcloud compute target-tcp-proxies create target-proxy-internal \
   --backend-service=service-proxy-internal --region="$REGION_B"
 run "Reserve static internal IP ip-internal-proxy" gcloud compute addresses create ip-internal-proxy \
