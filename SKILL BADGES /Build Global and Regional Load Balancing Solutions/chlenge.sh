@@ -204,12 +204,32 @@ run "Global HTTP health check http-check-alb" gcloud compute health-checks creat
 run "Global backend service service-alb-global" gcloud compute backend-services create service-alb-global \
   --global --load-balancing-scheme=EXTERNAL_MANAGED --protocol=HTTP --port-name=http80 \
   --health-checks=http-check-alb --global-health-checks
-run "Add mig-alb-api-a (Rate, max 1 RPS)" gcloud compute backend-services add-backend service-alb-global \
-  --global --instance-group=mig-alb-api-a --instance-group-region="$REGION_A" \
-  --balancing-mode=RATE --max-rate=1
-run "Add mig-alb-api-b (Rate, max 1 RPS)" gcloud compute backend-services add-backend service-alb-global \
-  --global --instance-group=mig-alb-api-b --instance-group-region="$REGION_B" \
-  --balancing-mode=RATE --max-rate=1
+# --- attach both MIGs to the global backend service (gcloud first, REST API fallback) ---
+GA="https://www.googleapis.com/compute/v1/projects/$PROJECT_ID/regions/$REGION_A/instanceGroups/mig-alb-api-a"
+GB="https://www.googleapis.com/compute/v1/projects/$PROJECT_ID/regions/$REGION_B/instanceGroups/mig-alb-api-b"
+both_attached() {
+  local a; a=$(gcloud compute backend-services describe service-alb-global --global --format="value(backends[].group)" 2>/dev/null)
+  grep -q "mig-alb-api-a" <<<"$a" && grep -q "mig-alb-api-b" <<<"$a"
+}
+if both_attached; then
+  ok "Both MIGs already attached to service-alb-global"
+else
+  for X in "mig-alb-api-a:$REGION_A" "mig-alb-api-b:$REGION_B"; do
+    gcloud compute backend-services add-backend service-alb-global --global \
+      --instance-group="${X%%:*}" --instance-group-region="${X##*:}" \
+      --balancing-mode=RATE --max-rate=1 >/dev/null 2>&1
+  done
+  if ! both_attached; then
+    warn "gcloud add-backend failed - using REST API fallback..."
+    curl -s -X PATCH -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+      -H "Content-Type: application/json" \
+      "https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/global/backendServices/service-alb-global" \
+      -d "{\"backends\":[{\"group\":\"$GA\",\"balancingMode\":\"RATE\",\"maxRate\":1},{\"group\":\"$GB\",\"balancingMode\":\"RATE\",\"maxRate\":1}]}" \
+      | grep -iE '"message"|"status"'
+    sleep 10
+  fi
+  both_attached && ok "Both MIGs attached (Rate, max 1 RPS)" || bad "MIG attach failed - paste the error here"
+fi
 
 # --- self-signed certificate ---
 CERT_DIR=$(mktemp -d); cd "$CERT_DIR" || exit 1
