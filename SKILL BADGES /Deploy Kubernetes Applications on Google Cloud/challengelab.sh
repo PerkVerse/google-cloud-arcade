@@ -1,265 +1,153 @@
-echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}        SUBSCRIBE PERKVERSE - INITIATING EXECUTION...            ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}==================================================================${RESET_FORMAT}"
+main() {
+# ============================================================
+#  GSP318 - Deploy Kubernetes Applications on Google Cloud
+#  Challenge Lab - Fully Automated Solution (v3 - interactive)
+# ============================================================
 
-#!/bin/bash
-# Define color variables
+G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; B='\033[1m'; N='\033[0m'
+step() { echo -e "\n${C}${B}==> $1${N}"; }
+ok()   { echo -e "${G}  [OK] $1${N}"; }
+warn() { echo -e "${Y}  [..] $1${N}"; }
+fail() { echo -e "${R}  [!!] $1${N}"; }
 
-BLACK=`tput setaf 0`
-RED=`tput setaf 1`
-GREEN=`tput setaf 2`
-YELLOW=`tput setaf 3`
-BLUE=`tput setaf 4`
-MAGENTA=`tput setaf 5`
-CYAN=`tput setaf 6`
-WHITE=`tput setaf 7`
-
-BG_BLACK=`tput setab 0`
-BG_RED=`tput setab 1`
-BG_GREEN=`tput setab 2`
-BG_YELLOW=`tput setab 3`
-BG_BLUE=`tput setab 4`
-BG_MAGENTA=`tput setab 5`
-BG_CYAN=`tput setab 6`
-BG_WHITE=`tput setab 7`
-
-BOLD=`tput bold`
-RESET=`tput sgr0`
-
-# Array of color codes excluding black and white
-TEXT_COLORS=($RED $GREEN $YELLOW $BLUE $MAGENTA $CYAN)
-BG_COLORS=($BG_RED $BG_GREEN $BG_YELLOW $BG_BLUE $BG_MAGENTA $BG_CYAN)
-
-# Pick random colors
-RANDOM_TEXT_COLOR=${TEXT_COLORS[$RANDOM % ${#TEXT_COLORS[@]}]}
-RANDOM_BG_COLOR=${BG_COLORS[$RANDOM % ${#BG_COLORS[@]}]}
-
-# Random Thank You Messages
-THANK_YOU_MESSAGES=(
-    "Thanks for providing the details!"
-    "Appreciate your input!"
-    "Your details have been recorded!"
-    "Thanks for your response!"
-    "Your input is valuable, thank you!"
-)
-
-# Pick a random thank you message
-RANDOM_THANK_YOU=${THANK_YOU_MESSAGES[$RANDOM % ${#THANK_YOU_MESSAGES[@]}]}
-
-#----------------------------------------------------start--------------------------------------------------#
-
-echo "${RANDOM_BG_COLOR}${RANDOM_TEXT_COLOR}${BOLD}Starting Execution${RESET}"
-
-set_cloudshell_env() {
-    echo
-    echo -n "${CYAN}${BOLD}Enter Repository Name: ${RESET}"
-    read REPO
-    echo -n "${MAGENTA}${BOLD}Enter Docker Image: ${RESET}"
-    read DCKR_IMG
-    echo -n "${YELLOW}${BOLD}Enter Tag Name: ${RESET}"
-    read TAG
-
-    export REPO="$REPO"
-    export DCKR_IMG="$DCKR_IMG"
-    export TAG="$TAG"
-
-    echo
-
-    echo "${RANDOM_TEXT_COLOR}${BOLD}$RANDOM_THANK_YOU${RESET}"
-
-    echo
-
+# Retry helper: skips retries on permission errors, re-auths Docker between tries
+run() {
+  local desc="$1"; shift
+  local out rc
+  for i in 1 2 3 4; do
+    out=$(eval "$@" 2>&1); rc=$?
+    if [ $rc -eq 0 ]; then ok "$desc"; return 0; fi
+    if echo "$out" | grep -qi "permission"; then
+      fail "$desc: permission problem (not retrying)"; echo "$out" | head -n 3; return 1
+    fi
+    warn "$desc failed (attempt $i/4). Retrying..."
+    gcloud auth configure-docker us-central1-docker.pkg.dev --quiet >/dev/null 2>&1
+    sleep 6
+  done
+  fail "$desc could not be completed."; echo "$out" | head -n 5; return 1
 }
 
-set_cloudshell_env
+# Ask a question, validate the answer, keep asking until it is valid
+ask() {
+  local label="$1" default="$2" regex="$3" hint="$4" val
+  while true; do
+    read -r -p "$(echo -e "  ${B}${label}${N} [default: ${default}]: ")" val
+    val="${val:-$default}"
+    if [[ "$val" =~ $regex ]]; then ANSWER="$val"; return 0; fi
+    fail "Invalid value. $hint"
+  done
+}
 
-# Step 1: Fetching region and zone details...
-echo "${CYAN}${BOLD}Fetching region and zone details...${RESET}"
+clear
+echo -e "${B}${C}  ====== GSP318 : Kubernetes Challenge Lab - Auto Solver ======${N}"
 
-export ZONE=$(gcloud compute project-info describe \
---format="value(commonInstanceMetadata.items[google-compute-default-zone])")
+# ---------- User input section ----------
+while true; do
+  step "Enter your configuration (press Enter to use the default)"
+  ask "Repository name" "valkyrie-repo" '^[a-z][a-z0-9-]*$' \
+      "Use lowercase letters, numbers and hyphens only (start with a letter)."
+  REPO="$ANSWER"
+  ask "Docker image name" "valkyrie-app" '^[a-z0-9][a-z0-9._-]*$' \
+      "Use lowercase letters, numbers, dots, hyphens or underscores."
+  IMAGE="$ANSWER"
+  ask "Image tag" "v0.0.1" '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$' \
+      "Use letters, numbers, dots, hyphens or underscores."
+  TAG="$ANSWER"
 
-export REGION=$(gcloud compute project-info describe \
---format="value(commonInstanceMetadata.items[google-compute-default-region])")
+  echo
+  echo -e "  Repository : ${B}$REPO${N}"
+  echo -e "  Image      : ${B}$IMAGE${N}"
+  echo -e "  Tag        : ${B}$TAG${N}"
+  read -r -p "$(echo -e "  ${B}Continue with these values? [Y/n]: ${N}")" CONFIRM
+  case "${CONFIRM:-Y}" in
+    [Yy]*) break ;;
+    *) warn "Okay, let's enter the values again." ;;
+  esac
+done
 
-# Step 2: Sourcing setup script...
-echo "${MAGENTA}${BOLD}Sourcing setup script...${RESET}"
-source <(gsutil cat gs://cloud-training/gsp318/marking/setup_marking_v2.sh)
+# ---------- Auto-detect environment ----------
+step "Detecting project, zone and region"
+export PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
+export ZONE=$(gcloud container clusters list --filter="name=valkyrie-dev" --format="value(location)" 2>/dev/null | head -n1)
+[ -z "$ZONE" ] && export ZONE="us-central1-c"
+export REGION="${ZONE%-*}"
+export REPO_REGION="us-central1"
+export FULL_IMAGE="${REPO_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE}:${TAG}"
 
-# Step 3: Downloading and extracting application...
-echo "${GREEN}${BOLD}Downloading and extracting application...${RESET}"
-gsutil cp gs://spls/gsp318/valkyrie-app.tgz .
+gcloud config set compute/zone "$ZONE" --quiet >/dev/null 2>&1
+gcloud config set compute/region "$REGION" --quiet >/dev/null 2>&1
+
+echo -e "  Project ID : ${B}$PROJECT_ID${N}"
+echo -e "  Zone       : ${B}$ZONE${N}"
+echo -e "  Region     : ${B}$REGION${N}"
+echo -e "  Image      : ${B}$FULL_IMAGE${N}"
+
+# ---------- Task 1 ----------
+step "TASK 1: Create Docker image and store Dockerfile"
+cd ~ || return 1
+source <(gcloud storage cat gs://spls/gsp318/script.sh) >/dev/null 2>&1
+rm -rf ~/valkyrie-app ~/valkyrie-app.tgz
+run "Source code downloaded" "gcloud storage cp gs://spls/gsp318/valkyrie-app.tgz ."
 tar -xzf valkyrie-app.tgz
-cd valkyrie-app
+cd ~/valkyrie-app || return 1
 
-# Step 4: Creating Dockerfile...
-echo "${YELLOW}${BOLD}Creating Dockerfile...${RESET}"
-cat > Dockerfile <<EOF
+cat > Dockerfile <<'EOF'
 FROM golang:1.10
 WORKDIR /go/src/app
 COPY source .
 RUN go install -v
 ENTRYPOINT ["app","-single=true","-port=8080"]
 EOF
+ok "Dockerfile created"
 
-# Step 5: Building Docker image...
-echo "${BLUE}${BOLD}Building Docker image...${RESET}"
-docker build -t $DCKR_IMG:$TAG .
+run "Docker image built ($IMAGE:$TAG)" "docker build -t $IMAGE:$TAG ."
+docker images | grep -E "REPOSITORY|$IMAGE"
 
-# Step 6: Executing Step 1 script...
-echo "${MAGENTA}${BOLD}Executing Step 1 script...${RESET}"
-cd ..
-./step1_v2.sh
+# ---------- Task 2 ----------
+step "TASK 2: Test the Docker image"
+docker rm -f valkyrie-test >/dev/null 2>&1
+OLD=$(docker ps -q --filter "publish=8080"); [ -n "$OLD" ] && docker rm -f $OLD >/dev/null 2>&1
+run "Container running on port 8080" "docker run -d --name valkyrie-test -p 8080:8080 $IMAGE:$TAG"
+sleep 5
+CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
+[ "$CODE" = "200" ] && ok "App responded with HTTP 200" || warn "HTTP $CODE (container is still running)"
 
-# Step 7: Running Docker container...
-echo "${CYAN}${BOLD}Running Docker container...${RESET}"
-cd valkyrie-app
-docker run -d -p 8080:8080 $DCKR_IMG:$TAG
+# ---------- Task 3 ----------
+step "TASK 3: Push image to Artifact Registry"
+if gcloud artifacts repositories describe $REPO --location=$REPO_REGION >/dev/null 2>&1; then
+  ok "Repository $REPO already exists"
+else
+  run "Repository $REPO created" "gcloud artifacts repositories create $REPO --repository-format=docker --location=$REPO_REGION --description='Docker repo' --quiet"
+fi
+gcloud auth configure-docker ${REPO_REGION}-docker.pkg.dev --quiet >/dev/null 2>&1
+ok "Docker authentication configured"
+run "Image tagged" "docker tag $IMAGE:$TAG $FULL_IMAGE"
+run "Image pushed to Artifact Registry" "docker push $FULL_IMAGE"
 
-# Step 8: Executing Step 2 script...
-echo "${MAGENTA}${BOLD}Executing Step 2 script...${RESET}"
-cd ..
-./step2_v2.sh
+# ---------- Task 4 ----------
+step "TASK 4: Create and expose deployment in Kubernetes"
+run "Cluster credentials fetched" "gcloud container clusters get-credentials valkyrie-dev --zone $ZONE"
 
-cd valkyrie-app
+cd ~/valkyrie-app/k8s || return 1
+sed -i "s|image:.*|image: ${FULL_IMAGE}|g" deployment.yaml
+ok "Placeholder replaced in deployment.yaml"
+grep "image:" deployment.yaml
 
-# Step 9: Creating Artifact Repository...
-echo "${YELLOW}${BOLD}Creating Artifact Repository...${RESET}"
-gcloud artifacts repositories create $REPO \
-    --repository-format=docker \
-    --location=$REGION \
-    --description="awesome lab" \
-    --async
+run "deployment.yaml applied" "kubectl apply -f deployment.yaml"
+run "service.yaml applied"    "kubectl apply -f service.yaml"
 
-# Step 10: Configuring Docker authentication...
-echo "${BLUE}${BOLD}Configuring Docker authentication...${RESET}"
-gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+step "Waiting for pods and load balancer IP"
+kubectl rollout status deployment --timeout=180s 2>/dev/null
+for i in $(seq 1 30); do
+  EXT_IP=$(kubectl get svc valkyrie-dev -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+  [ -n "$EXT_IP" ] && break
+  echo -e "  waiting for external IP... ($i/30)"; sleep 10
+done
 
-sleep 30
+echo; kubectl get pods; kubectl get svc valkyrie-dev
 
-# Step 11: Tagging and pushing Docker image...
-echo "${CYAN}${BOLD}Tagging and pushing Docker image...${RESET}"
-
-Image_ID=$(docker images --format='{{.ID}}')
-
-docker tag $Image_ID $REGION-docker.pkg.dev/$DEVSHELL_PROJECT_ID/$REPO/$DCKR_IMG:$TAG
-
-docker push $REGION-docker.pkg.dev/$DEVSHELL_PROJECT_ID/$REPO/$DCKR_IMG:$TAG
-
-# Step 12: Updating Kubernetes deployment...
-echo "${GREEN}${BOLD}Updating Kubernetes deployment...${RESET}"
-sed -i s#IMAGE_HERE#$REGION-docker.pkg.dev/$DEVSHELL_PROJECT_ID/$REPO/$DCKR_IMG:$TAG#g k8s/deployment.yaml
-
-# Step 13: Configuring Kubernetes cluster...
-echo "${YELLOW}${BOLD}Configuring Kubernetes cluster...${RESET}"
-gcloud container clusters get-credentials valkyrie-dev --zone $ZONE
-
-# Step 14: Deploying application to Kubernetes...
-echo "${BLUE}${BOLD}Deploying application to Kubernetes...${RESET}"
-kubectl create -f k8s/deployment.yaml
-kubectl create -f k8s/service.yaml
-
-echo
-
-# Function to display a random congratulatory message
-function random_congrats() {
-    MESSAGES=(
-        "${GREEN}Congratulations For Completing The Lab! Keep up the great work!${RESET}"
-        "${CYAN}Well done! Your hard work and effort have paid off!${RESET}"
-        "${YELLOW}Amazing job! You’ve successfully completed the lab!${RESET}"
-        "${BLUE}Outstanding! Your dedication has brought you success!${RESET}"
-        "${MAGENTA}Great work! You’re one step closer to mastering this!${RESET}"
-        "${RED}Fantastic effort! You’ve earned this achievement!${RESET}"
-        "${CYAN}Congratulations! Your persistence has paid off brilliantly!${RESET}"
-        "${GREEN}Bravo! You’ve completed the lab with flying colors!${RESET}"
-        "${YELLOW}Excellent job! Your commitment is inspiring!${RESET}"
-        "${BLUE}You did it! Keep striving for more successes like this!${RESET}"
-        "${MAGENTA}Kudos! Your hard work has turned into a great accomplishment!${RESET}"
-        "${RED}You’ve smashed it! Completing this lab shows your dedication!${RESET}"
-        "${CYAN}Impressive work! You’re making great strides!${RESET}"
-        "${GREEN}Well done! This is a big step towards mastering the topic!${RESET}"
-        "${YELLOW}You nailed it! Every step you took led you to success!${RESET}"
-        "${BLUE}Exceptional work! Keep this momentum going!${RESET}"
-        "${MAGENTA}Fantastic! You’ve achieved something great today!${RESET}"
-        "${RED}Incredible job! Your determination is truly inspiring!${RESET}"
-        "${CYAN}Well deserved! Your effort has truly paid off!${RESET}"
-        "${GREEN}You’ve got this! Every step was a success!${RESET}"
-        "${YELLOW}Nice work! Your focus and effort are shining through!${RESET}"
-        "${BLUE}Superb performance! You’re truly making progress!${RESET}"
-        "${MAGENTA}Top-notch! Your skill and dedication are paying off!${RESET}"
-        "${RED}Mission accomplished! This success is a reflection of your hard work!${RESET}"
-        "${CYAN}You crushed it! Keep pushing towards your goals!${RESET}"
-        "${GREEN}You did a great job! Stay motivated and keep learning!${RESET}"
-        "${YELLOW}Well executed! You’ve made excellent progress today!${RESET}"
-        "${BLUE}Remarkable! You’re on your way to becoming an expert!${RESET}"
-        "${MAGENTA}Keep it up! Your persistence is showing impressive results!${RESET}"
-        "${RED}This is just the beginning! Your hard work will take you far!${RESET}"
-        "${CYAN}Terrific work! Your efforts are paying off in a big way!${RESET}"
-        "${GREEN}You’ve made it! This achievement is a testament to your effort!${RESET}"
-        "${YELLOW}Excellent execution! You’re well on your way to mastering the subject!${RESET}"
-        "${BLUE}Wonderful job! Your hard work has definitely paid off!${RESET}"
-        "${MAGENTA}You’re amazing! Keep up the awesome work!${RESET}"
-        "${RED}What an achievement! Your perseverance is truly admirable!${RESET}"
-        "${CYAN}Incredible effort! This is a huge milestone for you!${RESET}"
-        "${GREEN}Awesome! You’ve done something incredible today!${RESET}"
-        "${YELLOW}Great job! Keep up the excellent work and aim higher!${RESET}"
-        "${BLUE}You’ve succeeded! Your dedication is your superpower!${RESET}"
-        "${MAGENTA}Congratulations! Your hard work has brought great results!${RESET}"
-        "${RED}Fantastic work! You’ve taken a huge leap forward today!${RESET}"
-        "${CYAN}You’re on fire! Keep up the great work!${RESET}"
-        "${GREEN}Well deserved! Your efforts have led to success!${RESET}"
-        "${YELLOW}Incredible! You’ve achieved something special!${RESET}"
-        "${BLUE}Outstanding performance! You’re truly excelling!${RESET}"
-        "${MAGENTA}Terrific achievement! Keep building on this success!${RESET}"
-        "${RED}Bravo! You’ve completed the lab with excellence!${RESET}"
-        "${CYAN}Superb job! You’ve shown remarkable focus and effort!${RESET}"
-        "${GREEN}Amazing work! You’re making impressive progress!${RESET}"
-        "${YELLOW}You nailed it again! Your consistency is paying off!${RESET}"
-        "${BLUE}Incredible dedication! Keep pushing forward!${RESET}"
-        "${MAGENTA}Excellent work! Your success today is well earned!${RESET}"
-        "${RED}You’ve made it! This is a well-deserved victory!${RESET}"
-        "${CYAN}Wonderful job! Your passion and hard work are shining through!${RESET}"
-        "${GREEN}You’ve done it! Keep up the hard work and success will follow!${RESET}"
-        "${YELLOW}Great execution! You’re truly mastering this!${RESET}"
-        "${BLUE}Impressive! This is just the beginning of your journey!${RESET}"
-        "${MAGENTA}You’ve achieved something great today! Keep it up!${RESET}"
-        "${RED}You’ve made remarkable progress! This is just the start!${RESET}"
-    )
-
-    RANDOM_INDEX=$((RANDOM % ${#MESSAGES[@]}))
-    echo -e "${BOLD}${MESSAGES[$RANDOM_INDEX]}"
+echo -e "\n${G}${B}================ ALL TASKS COMPLETED ================${N}"
+[ -n "$EXT_IP" ] && echo -e "  App URL : ${B}http://$EXT_IP${N}"
+echo -e "  Now click ${B}'Check my progress'${N} for each task."
 }
-
-# Display a random congratulatory message
-random_congrats
-
-echo -e "\n"  # Adding one blank line
-
-cd
-
-remove_files() {
-    # Loop through all files in the current directory
-    for file in *; do
-        # Check if the file name starts with "gsp", "arc", or "shell"
-        if [[ "$file" == gsp* || "$file" == arc* || "$file" == shell* ]]; then
-            # Check if it's a regular file (not a directory)
-            if [[ -f "$file" ]]; then
-                # Remove the file and echo the file name
-                rm "$file"
-                echo "File removed: $file"
-            fi
-        fi
-    done
-}
-
-remove_files
-
-echo
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}              LAB COMPLETED SUCCESSFULLY!              ${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}=======================================================${RESET_FORMAT}"
-echo
-echo "${RED_TEXT}${BOLD_TEXT}${UNDERLINE_TEXT}https://www.youtube.com/@PerkVers${RESET_FORMAT}"
-echo "${GREEN_TEXT}${BOLD_TEXT}👍 LIKE | 🔄 SHARE | 🔔 SUBSCRIBE${RESET_FORMAT}"
-echo "${YELLOW_TEXT}${BOLD_TEXT}PERKVERSE - Google Cloud Arcade Labs & Tech Opportunities${RESET_FORMAT}"
-echo "${CYAN_TEXT}${BOLD_TEXT}Follow @PerkVers for more updates${RESET_FORMAT}"
+main
